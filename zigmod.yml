@@ -1,0 +1,7 @@
+id: 8govvrkfb4fsxf2o7dnsi1hq6fmet1lzrspbul9ouzbh0nyo
+name: yatlc
+license: MIT
+description: yet-another-toy-language compiler
+root_dependencies:
+  - src: git https://github.com/Hejsil/zig-clap commit-ee6cb6a17bd8748c3af45467c5dabbe1d56be832
+    # TODO: 6c9ca9025199b145c42a75d10cadb3f97879ee6d - fix zig-clap compatibility.

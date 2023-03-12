@@ -10,3 +10,9 @@ To build the compiler, run `zig build`, emitting `./zig-out/bin/yatlc` binary.
 ## Testing `yatlc`
 
 To unit-test the compiler, run `zig test src/main.zig`.
+
+## Managing Dependencies
+
+[Zigmod](https://github.com/nektro/zigmod) is used to manage dependencies.
+To fetch all the dependencies declared in `zigmod.yml`, run `zigmod fetch`.
+
