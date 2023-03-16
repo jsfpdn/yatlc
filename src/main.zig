@@ -27,11 +27,11 @@ pub fn main() !void {
     };
     defer res.deinit();
     if (res.args.help)
-        std.debug.print("help!");
+        std.debug.print("help!\n", .{});
     if (res.args.verbose)
-        std.debug.print("verbose!");
-    for (res.positionals) |pos|
-        std.debug.print("positional: {s}", .{pos});
+        std.debug.print("verbose!\n", .{});
+    for (res.positionals) |pos, i|
+        std.debug.print("positional {d}: {s}\n", .{ i, pos });
 
     const file: fs.File = try fs.cwd().openFile("build.zig", .{});
     defer file.close();
@@ -45,10 +45,4 @@ pub fn main() !void {
 
     const tok = tokenizer.Tokenizer{ .contents = contents };
     tok.printContents();
-}
-
-test {
-    // Driver code to run all tests in descendant sub-packages.
-    std.testing.refAllDeclsRecursive(tokenizer);
-    std.testing.refAllDeclsRecursive(@This());
 }

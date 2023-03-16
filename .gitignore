@@ -1,5 +1,8 @@
 yatlc
 zig-cache/
 zig-out/
-.zigmod
+
+# Package management
 deps.zig
+gyro.lock
+.gyro

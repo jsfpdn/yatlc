@@ -1,0 +1,19 @@
+pkgs:
+  yatlc:
+    version: 0.0.0
+    description: "yatl compiler, project for a compiler course"
+    source_url: "https://github.com/jsfpdn/yatlc"
+    tags:
+      compiler
+      language
+      llvm
+    root: src/main.zig
+    files:
+      README.md
+      LICENSE
+deps:
+  clap:
+    git:
+      url: "https://github.com/Hejsil/zig-clap.git"
+      ref: dbc6b8e54ad753b0605feaeecc8e79dba3572ed3
+      root: clap.zig

@@ -5,14 +5,13 @@ This is a repository for the `yatl` compiler, a project for a compiler course.
 
 ## Building `yatlc`
 
-To build the compiler, run `zig build`, emitting `./zig-out/bin/yatlc` binary.
+To build the compiler, run `gyro build`, emitting `./zig-out/bin/yatlc` binary.
 
 ## Testing `yatlc`
 
-To unit-test the compiler, run `zig test src/main.zig`.
+To unit-test the compiler, run `zig test src/tests.zig`.
 
 ## Managing Dependencies
 
-[Zigmod](https://github.com/nektro/zigmod) is used to manage dependencies.
-To fetch all the dependencies declared in `zigmod.yml`, run `zigmod fetch`.
+[Gyro](https://github.com/mattnite/gyro) is used to manage dependencies.
 
