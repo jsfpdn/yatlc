@@ -5,10 +5,7 @@ const fs = std.fs;
 const io = std.io;
 
 const tokenizer = @import("tokenizer/tokenizer.zig");
-
-// TODO(jsfpdn):
-//  * pass files from stdin
-//  * parse command line arguments
+const logger = @import("logger/logger.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 
@@ -26,14 +23,21 @@ pub fn main() !void {
         return err;
     };
     defer res.deinit();
-    if (res.args.help)
-        std.debug.print("help!\n", .{});
-    if (res.args.verbose)
-        std.debug.print("verbose!\n", .{});
-    for (res.positionals) |pos, i|
-        std.debug.print("positional {d}: {s}\n", .{ i, pos });
 
-    const file: fs.File = try fs.cwd().openFile("build.zig", .{});
+    const log: logger.Logger = logger.Logger{ .verbose = res.args.verbose };
+
+    if (res.positionals.len != 1) {
+        log.err("Path to exactly one source file must be supplied!\n", .{});
+        try clap.usage(std.io.getStdErr().writer(), clap.Help, &params);
+        _ = try std.io.getStdErr().writer().write("\n");
+        return;
+    }
+    const filePath = res.positionals[0];
+
+    const file: fs.File = fs.cwd().openFile(filePath, .{}) catch |err| {
+        log.err("could not open file {s}: {s}", .{ filePath, @errorName(err) });
+        return;
+    };
     defer file.close();
 
     const reader = file.reader();
@@ -43,6 +47,6 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    const tok = tokenizer.Tokenizer{ .contents = contents };
+    const tok = tokenizer.Tokenizer{ .contents = contents, .log = log };
     tok.printContents();
 }

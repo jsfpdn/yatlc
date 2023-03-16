@@ -1,11 +1,14 @@
 const tokens = @import("tokens.zig");
 const std = @import("std");
 
+const logger = @import("../logger/logger.zig");
+
 pub const Tokenizer = struct {
     contents: []const u8,
+    log: logger.Logger,
 
     pub fn printContents(self: Tokenizer) void {
-        std.debug.print("{s}\n", .{self.contents});
+        self.log.debug("{s}\n", .{self.contents});
     }
 };
 
