@@ -4,7 +4,9 @@ const clap = @import("clap");
 const fs = std.fs;
 const io = std.io;
 
-const tokenizer = @import("tokenizer/tokenizer.zig");
+// TODO(jsfpdn): create error reporter.
+
+const scanner = @import("scanner/scanner.zig");
 const logger = @import("logger/logger.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
@@ -67,6 +69,6 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    const tok = tokenizer.Tokenizer{ .contents = contents, .log = log };
-    tok.printContents();
+    const tok = scanner.Scanner{ .contents = contents, .log = log };
+    _ = tok;
 }

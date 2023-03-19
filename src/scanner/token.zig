@@ -1,7 +1,27 @@
 const std = @import("std");
 const expect = std.testing.expect;
 
-const Token = enum {
+pub const Token = struct {
+    tokenType: TokenType,
+    bufferLoc: BufferLoc,
+    sourceLoc: SourceLoc,
+
+    pub const BufferLoc = struct {
+        start: usize,
+        end: usize,
+    };
+
+    pub const SourceLoc = struct {
+        line: usize,
+        column: usize,
+    };
+
+    pub fn len(self: *Token) usize {
+        return self.bufferLoc.end - self.bufferLoc.start;
+    }
+};
+
+pub const TokenType = enum {
     // Special tokens
     ILLEGAL,
     EOF,
@@ -12,6 +32,7 @@ const Token = enum {
     INT, // 42
     FLOAT, // 42.24
     CHAR, // 'a'
+    STRING, // "string"
 
     // Arithmetical operators
     ADD, // +
@@ -72,6 +93,7 @@ const Token = enum {
     GOTO,
     IF,
     RETURN,
+    WHILE,
 
     // builtin functions
     BF_LEN, // @len
@@ -79,7 +101,21 @@ const Token = enum {
     BF_TOFLOAT, // @toFloat
     // TODO: add builtin functions for printing and user input.
 
-    pub const TokenNameTable = [@typeInfo(Token).Enum.fields.len][:0]const u8{
+    const keywords = std.ComptimeStringMap(TokenType, .{
+        .{ "break", .BREAK },
+        .{ "continue", .CONTINUE },
+        .{ "else", .ELSE },
+        .{ "goto", .GOTO },
+        .{ "if", .IF },
+        .{ "return", .RETURN },
+        .{ "while", .WHILE },
+    });
+
+    pub fn getKeyword(bytes: []const u8) ?TokenType {
+        return keywords.get(bytes);
+    }
+
+    pub const TokenNameTable = [@typeInfo(TokenType).Enum.fields.len][:0]const u8{
         "ILLEGAL",
         "EOF",
         "COMMENT",
@@ -88,6 +124,7 @@ const Token = enum {
         "INT",
         "FLOAT",
         "CHAR",
+        "STRING",
 
         "+",
         "-",
@@ -140,26 +177,27 @@ const Token = enum {
         "goto",
         "if",
         "return",
+        "while",
 
         "@len",
         "@toInt",
         "@toFloat",
     };
 
-    pub fn str(self: Token) [:0]const u8 {
+    pub fn str(self: TokenType) [:0]const u8 {
         return TokenNameTable[@enumToInt(self)];
     }
 };
 
 test "enforce correct size of TokenNameTable size" {
-    try expect(Token.TokenNameTable.len == @typeInfo(Token).Enum.fields.len);
+    try expect(TokenType.TokenNameTable.len == @typeInfo(TokenType).Enum.fields.len);
 }
 
 test "enum to string representation mapping" {
     // Test few of the mappings from enum to its textual representation:
-    try expect(std.mem.eql(u8, Token.INC.str(), "++"));
-    try expect(std.mem.eql(u8, Token.BREAK.str(), "break"));
-    try expect(std.mem.eql(u8, Token.EQL.str(), "=="));
-    try expect(std.mem.eql(u8, Token.LPAREN.str(), "("));
-    try expect(std.mem.eql(u8, Token.BF_LEN.str(), "@len"));
+    try expect(std.mem.eql(u8, TokenType.INC.str(), "++"));
+    try expect(std.mem.eql(u8, TokenType.BREAK.str(), "break"));
+    try expect(std.mem.eql(u8, TokenType.EQL.str(), "=="));
+    try expect(std.mem.eql(u8, TokenType.LPAREN.str(), "("));
+    try expect(std.mem.eql(u8, TokenType.BF_LEN.str(), "@len"));
 }
