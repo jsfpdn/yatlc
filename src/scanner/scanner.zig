@@ -40,21 +40,27 @@ pub const Scanner = struct {
 
         const c = self.consume() catch unreachable;
         switch (c) {
-            '(' => {
-                tok.tokenType = TokenType.LPAREN;
-                return tok;
-            },
-            '[' => {
-                tok.tokenType = TokenType.LBRACK;
-                return tok;
-            },
-            '{' => {
-                tok.tokenType = TokenType.LBRACE;
-                return tok;
-            },
-            ',' => {
-                tok.tokenType = TokenType.COMMA;
-                return tok;
+            '(' => tok.tokenType = TokenType.LPAREN,
+            '[' => tok.tokenType = TokenType.LBRACK,
+            '{' => tok.tokenType = TokenType.LBRACE,
+            ',' => tok.tokenType = TokenType.COMMA,
+            ')' => tok.tokenType = TokenType.RPAREN,
+            ']' => tok.tokenType = TokenType.RBRACK,
+            '}' => tok.tokenType = TokenType.RBRACE,
+            ';' => tok.tokenType = TokenType.SEMICOLON,
+            ':' => tok.tokenType = TokenType.COLON,
+            '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
+            '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
+            '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
+            '<' => self.switch2(&tok, '=', TokenType.LEQ, TokenType.LSS),
+            '>' => self.switch2(&tok, '=', TokenType.GEQ, TokenType.GTR),
+            '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
+            '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
+            '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
+            '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
+            '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
+            '@' => {
+                // TODO(jsfpdn): Handle builtins.
             },
             '.' => {
                 tok.tokenType = TokenType.PERIOD;
@@ -67,40 +73,7 @@ pub const Scanner = struct {
 
                 return tok;
             },
-            ')' => {
-                tok.tokenType = TokenType.RPAREN;
-                return tok;
-            },
-            ']' => {
-                tok.tokenType = TokenType.RBRACK;
-                return tok;
-            },
-            '}' => {
-                tok.tokenType = TokenType.RBRACE;
-                return tok;
-            },
-            ';' => {
-                tok.tokenType = TokenType.SEMICOLON;
-                return tok;
-            },
-            ':' => {
-                tok.tokenType = TokenType.COLON;
-                return tok;
-            },
-            else => {},
-        }
 
-        switch (c) {
-            '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
-            '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
-            '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
-            '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
-            '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
-            '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
-            '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
-            '<' => self.switch2(&tok, '=', TokenType.LEQ, TokenType.LSS),
-            '>' => self.switch2(&tok, '=', TokenType.GEQ, TokenType.GTR),
-            '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
                 const p = self.peek() catch return tok;
@@ -111,7 +84,7 @@ pub const Scanner = struct {
                     self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO);
                 }
             },
-            'A'...'z' => {
+            'a'...'z', 'A'...'Z' => {
                 tok.tokenType = TokenType.IDENT;
                 self.parseIdent(&tok);
                 if (token.TokenType.getKeyword(self.symbol(tok))) |keyword| {
