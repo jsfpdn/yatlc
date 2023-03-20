@@ -61,7 +61,7 @@ test "OP and OP_ASSIGN tokens" {
     try std.testing.expectEqualStrings("-=", s.symbol(tokSubAssign));
 }
 
-test "scan identifiers and keywords" {
+test "scan identifiers, keywords, and builtin" {
     const tuple = struct { symbol: []const u8, tokenType: TokenType };
 
     const cases = [_]tuple{
@@ -73,12 +73,18 @@ test "scan identifiers and keywords" {
         .{ .symbol = "while", .tokenType = TokenType.WHILE },
         .{ .symbol = "identifier", .tokenType = TokenType.IDENT },
         .{ .symbol = "Identifier", .tokenType = TokenType.IDENT },
-        .{ .symbol = "Identifier2", .tokenType = TokenType.IDENT }, // FIXME(jsfpdn)
-        // .{ .symbol = "__Ident_ifier_", .tokenType = TokenType.IDENT },
-        // TODO(jsfpdn): ^ support identifiers with underscores.
+        .{ .symbol = "Identifier2", .tokenType = TokenType.IDENT },
+        .{ .symbol = "__Ident_ifier_", .tokenType = TokenType.IDENT },
+        .{ .symbol = "@toBool", .tokenType = TokenType.BF_TOBOOL },
+        .{ .symbol = "@toInt", .tokenType = TokenType.BF_TOINT },
+        .{ .symbol = "@toFloat", .tokenType = TokenType.BF_TOFLOAT },
+        .{ .symbol = "@len", .tokenType = TokenType.BF_LEN },
+        .{ .symbol = "@print", .tokenType = TokenType.BF_PRINT },
+        .{ .symbol = "@read", .tokenType = TokenType.BF_READ },
+        .{ .symbol = "EOF", .tokenType = TokenType.EOF },
     };
 
-    var s = createTestScanner("break continue \n\t else if return while identifier Identifier Identifier2");
+    var s = createTestScanner("break continue \n\t else if return while identifier Identifier Identifier2 __Ident_ifier_ @toBool \t\n @toInt @toFloat @len @print @read \n\t");
 
     var tok: token.Token = undefined;
     for (cases) |tc| {
@@ -87,3 +93,18 @@ test "scan identifiers and keywords" {
         try std.testing.expectEqual(tc.tokenType, tok.tokenType);
     }
 }
+
+test "scan invalid tokens" {
+    // TODO(jsfpdn): Once error reporting is set up, test it here as well.
+    var s = createTestScanner("  ____ @nonExisting_Builtin2 \n");
+
+    var tok = s.next();
+    try std.testing.expectEqualStrings("ILLEGAL", s.symbol(tok));
+    try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
+
+    tok = s.next();
+    try std.testing.expectEqualStrings("ILLEGAL", s.symbol(tok));
+    try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
+}
+
+test "scan integer literals" {}

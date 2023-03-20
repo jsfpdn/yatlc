@@ -59,8 +59,20 @@ pub const Scanner = struct {
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
             '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
             '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
+            '"' => {
+                // TODO(jsfpdn): Parse string literal.
+                self.parseStringLiteral(&tok);
+            },
             '@' => {
-                // TODO(jsfpdn): Handle builtins.
+                self.parseIdent(&tok);
+                const s = self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
+                if (token.TokenType.getBuiltin(s)) |builtin| {
+                    tok.tokenType = builtin;
+                } else {
+                    // TODO(jsfpdn): Handle error reporting when such builtin does not exist.
+                    //               Parser could recover from this error - just skip this token.
+                }
+                return tok;
             },
             '.' => {
                 tok.tokenType = TokenType.PERIOD;
@@ -73,7 +85,6 @@ pub const Scanner = struct {
 
                 return tok;
             },
-
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
                 const p = self.peek() catch return tok;
@@ -84,11 +95,24 @@ pub const Scanner = struct {
                     self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO);
                 }
             },
-            'a'...'z', 'A'...'Z' => {
+            'a'...'z', 'A'...'Z', '_' => {
                 tok.tokenType = TokenType.IDENT;
                 self.parseIdent(&tok);
                 if (token.TokenType.getKeyword(self.symbol(tok))) |keyword| {
                     tok.tokenType = keyword;
+                } else {
+                    var otherThanUnderscore = false;
+                    for (self.symbol(tok)) |char| {
+                        if (char != '_') {
+                            otherThanUnderscore = true;
+                            break;
+                        }
+                    }
+
+                    if (!otherThanUnderscore) {
+                        tok.tokenType = TokenType.ILLEGAL;
+                        // TODO(jsfpdn): error reporting: identifier must not be composed entirely from underscores.
+                    }
                 }
             },
             '0'...'9' => {
@@ -114,9 +138,13 @@ pub const Scanner = struct {
 
     pub fn parseIdent(self: *Scanner, tok: *Token) void {
         // TODO(jsfpdn): fix identifiers with underscores.
-        while (true and !self.eof()) {
+        while (true) {
+            if (self.eof()) {
+                tok.bufferLoc.end = self.offset - 1;
+                return;
+            }
             const p = self.peek() catch unreachable;
-            if (!isAlphanumeric(p)) {
+            if (!isAlphanumeric(p) and p != '_') {
                 tok.bufferLoc.end = self.offset - 1;
                 return;
             }
@@ -135,18 +163,24 @@ pub const Scanner = struct {
         }
     }
 
+    pub fn parseStringLiteral(self: *Scanner, tok: *Token) void {
+        // TODO(jsfpdn): implement me.
+        _ = self;
+        _ = tok;
+    }
+
     fn advance(self: *Scanner) void {
         if (self.eof()) {
             return;
         }
 
         const p = self.peek() catch unreachable;
+        self.offset += 1;
+        self.charOffset += 1;
         if (p == '\n') {
             self.lineOffset += 1;
             self.charOffset = 1;
         }
-        self.charOffset += 1;
-        self.offset += 1;
     }
 
     fn switch2(self: *Scanner, tok: *Token, shouldFollow: u8, ifFollows: TokenType, elseFollows: TokenType) void {
@@ -213,13 +247,19 @@ pub const Scanner = struct {
 
     // Return the actual symbol (lexeme) of the particular token.
     pub fn symbol(self: Scanner, tok: Token) []const u8 {
+        switch (tok.tokenType) {
+            TokenType.EOF => return "EOF",
+            TokenType.ILLEGAL => return "ILLEGAL",
+            else => {},
+        }
+
         return self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
     }
 };
 
 fn isAlphanumeric(c: u8) bool {
     switch (c) {
-        'A'...'z', '0'...'9' => return true,
+        'a'...'z', 'A'...'Z', '0'...'9' => return true,
         else => return false,
     }
 }
