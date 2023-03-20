@@ -68,7 +68,6 @@ test "scan identifiers and keywords" {
         .{ .symbol = "break", .tokenType = TokenType.BREAK },
         .{ .symbol = "continue", .tokenType = TokenType.CONTINUE },
         .{ .symbol = "else", .tokenType = TokenType.ELSE },
-        .{ .symbol = "goto", .tokenType = TokenType.GOTO },
         .{ .symbol = "if", .tokenType = TokenType.IF },
         .{ .symbol = "return", .tokenType = TokenType.RETURN },
         .{ .symbol = "while", .tokenType = TokenType.WHILE },
@@ -79,7 +78,7 @@ test "scan identifiers and keywords" {
         // TODO(jsfpdn): ^ support identifiers with underscores.
     };
 
-    var s = createTestScanner("break continue \n\t else goto if return while identifier Identifier Identifier2");
+    var s = createTestScanner("break continue \n\t else if return while identifier Identifier Identifier2");
 
     var tok: token.Token = undefined;
     for (cases) |tc| {

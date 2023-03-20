@@ -90,22 +90,23 @@ pub const TokenType = enum {
     BREAK,
     CONTINUE,
     ELSE,
-    GOTO,
     IF,
     RETURN,
     WHILE,
 
     // builtin functions
     BF_LEN, // @len
+    BF_TOBOOL, // @toBool
     BF_TOINT, // @toInt
     BF_TOFLOAT, // @toFloat
+    BF_PRINT, // @print
+    BF_READ, // @read
     // TODO: add builtin functions for printing and user input.
 
     const keywords = std.ComptimeStringMap(TokenType, .{
         .{ "break", .BREAK },
         .{ "continue", .CONTINUE },
         .{ "else", .ELSE },
-        .{ "goto", .GOTO },
         .{ "if", .IF },
         .{ "return", .RETURN },
         .{ "while", .WHILE },
@@ -115,7 +116,21 @@ pub const TokenType = enum {
         return keywords.get(bytes);
     }
 
+    const builtins = std.ComptimeStringMap(TokenType, .{
+        .{ "@len", .BF_LEN },
+        .{ "@toBool", .BF_TOBOOL },
+        .{ "@toInt", .BF_TOINT },
+        .{ "@toFloat", .BF_TOFLOAT },
+        .{ "@print", .BF_PRINT },
+        .{ "@read", .BF_READ },
+    });
+
+    pub fn getBuiltin(bytes: []const u8) ?TokenType {
+        return builtins.get(bytes);
+    }
+
     pub const TokenNameTable = [@typeInfo(TokenType).Enum.fields.len][:0]const u8{
+        //
         "ILLEGAL",
         "EOF",
         "COMMENT",
@@ -174,14 +189,16 @@ pub const TokenType = enum {
         "break",
         "continue",
         "else",
-        "goto",
         "if",
         "return",
         "while",
 
         "@len",
+        "@toBool",
         "@toInt",
         "@toFloat",
+        "@print",
+        "@read",
     };
 
     pub fn str(self: TokenType) [:0]const u8 {
