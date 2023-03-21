@@ -26,13 +26,6 @@ fn createTestScanner(input: []const u8) scanner.Scanner {
     return scanner.createScanner(input, logger.Logger{ .verbose = true });
 }
 
-test "eat whitespace only" {
-    var s = createTestScanner("  \t\n\r  ");
-
-    s.eatWhitespace();
-    try std.testing.expect(s.eof() == true);
-}
-
 test "eat EOF" {
     var s = createTestScanner("");
 
@@ -107,8 +100,73 @@ test "scan invalid tokens" {
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
 }
 
-test "scan integer literals" {
-    // TODO(jsfpdn): implement me.
+test "scan number literals" {
+    var s = createTestScanner("123 0 0123 .23 123.45 0b1001 0x14AaF 0o1237");
+
+    var tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("123", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("0", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("0123", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.FLOAT, tok.tokenType);
+    try std.testing.expectEqualStrings(".23", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.FLOAT, tok.tokenType);
+    try std.testing.expectEqualStrings("123.45", s.symbol(tok));
+
+    // TODO(jsfpdn): Implement the following.
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("0b1001", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("0x14AaF", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.INT, tok.tokenType);
+    try std.testing.expectEqualStrings("0o1237", s.symbol(tok));
+}
+
+test "scan malformed number literals" {
+    // TODO(jsfpdn): Test binary numbers with digits > 1 etc.
+}
+
+test "scan string literals" {
+    var s = createTestScanner(
+        \\ "this is a string literal!" "multiline
+        \\string literal!"
+        \\ "this has \" escaped quotes!"
+    );
+
+    var tok = s.next();
+    try std.testing.expectEqual(TokenType.STRING, tok.tokenType);
+    try std.testing.expectEqualStrings("\"this is a string literal!\"", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.STRING, tok.tokenType);
+    try std.testing.expectEqualStrings("\"multiline\nstring literal!\"", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.STRING, tok.tokenType);
+    try std.testing.expectEqualStrings("\"this has \\\" escaped quotes!\"", s.symbol(tok));
+}
+
+test "scan unclosed string literals" {
+    var s = createTestScanner("\"look at me, I'm unclosed!");
+
+    var tok = s.next();
+    try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
+    try std.testing.expectEqualStrings("\"look at me, I'm unclosed!", s.symbol(tok));
 }
 
 test "scan comments" {

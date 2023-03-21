@@ -59,31 +59,18 @@ pub const Scanner = struct {
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
             '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
             '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
-            '"' => {
-                // TODO(jsfpdn): Parse string literal.
-                self.parseStringLiteral(&tok);
-            },
-            '@' => {
-                self.parseIdent(&tok);
-                const s = self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
-                if (token.TokenType.getBuiltin(s)) |builtin| {
-                    tok.tokenType = builtin;
-                } else {
-                    // TODO(jsfpdn): Handle error reporting when such builtin does not exist.
-                    //               Parser could recover from this error - just skip this token.
-                }
-                return tok;
-            },
+            '"' => self.parseStringLiteral(&tok),
+            '@' => self.parseBuiltin(&tok),
+            'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
+            '0'...'9' => self.parseNumber(&tok),
             '.' => {
+                // Either a single period or a floating point number with just a decimal part.
                 tok.tokenType = TokenType.PERIOD;
 
                 const p = self.peek() catch return tok;
                 if (isNumeric(p)) {
-                    tok.tokenType = TokenType.FLOAT;
-                    self.parseInteger(&tok);
+                    self.parseDecimalPart(&tok);
                 }
-
-                return tok;
             },
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
@@ -94,40 +81,6 @@ pub const Scanner = struct {
                     else => self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO),
                 }
             },
-            'a'...'z', 'A'...'Z', '_' => {
-                tok.tokenType = TokenType.IDENT;
-                self.parseIdent(&tok);
-                if (token.TokenType.getKeyword(self.symbol(tok))) |keyword| {
-                    tok.tokenType = keyword;
-                } else {
-                    var otherThanUnderscore = false;
-                    for (self.symbol(tok)) |char| {
-                        if (char != '_') {
-                            otherThanUnderscore = true;
-                            break;
-                        }
-                    }
-
-                    if (!otherThanUnderscore) {
-                        tok.tokenType = TokenType.ILLEGAL;
-                        // TODO(jsfpdn): error reporting: identifier must not be composed entirely from underscores.
-                    }
-                }
-            },
-            '0'...'9' => {
-                tok.tokenType = TokenType.INT;
-                self.parseInteger(&tok);
-
-                const p = self.peek() catch return tok;
-                if (p != '.') {
-                    return tok;
-                }
-
-                tok.tokenType = TokenType.FLOAT;
-                // Consume ".".
-                self.advance();
-                self.parseInteger(&tok);
-            },
             else => unreachable,
         }
 
@@ -135,8 +88,28 @@ pub const Scanner = struct {
         return tok;
     }
 
-    pub fn parseIdent(self: *Scanner, tok: *Token) void {
-        // TODO(jsfpdn): fix identifiers with underscores.
+    fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
+        tok.tokenType = TokenType.IDENT;
+        self.parseIdent(tok);
+        if (token.TokenType.getKeyword(self.symbol(tok.*))) |keyword| {
+            tok.tokenType = keyword;
+        } else {
+            var otherThanUnderscore = false;
+            for (self.symbol(tok.*)) |char| {
+                if (char != '_') {
+                    otherThanUnderscore = true;
+                    break;
+                }
+            }
+
+            if (!otherThanUnderscore) {
+                tok.tokenType = TokenType.ILLEGAL;
+                // TODO(jsfpdn): error reporting: identifier must not be composed entirely from underscores.
+            }
+        }
+    }
+
+    fn parseIdent(self: *Scanner, tok: *Token) void {
         while (true) {
             if (self.eof()) {
                 tok.bufferLoc.end = self.offset - 1;
@@ -151,25 +124,72 @@ pub const Scanner = struct {
         }
     }
 
-    pub fn parseInteger(self: *Scanner, tok: *Token) void {
-        // TODO(jsfpdn): fixme.
+    fn parseNumber(self: *Scanner, tok: *Token) void {
+        tok.tokenType = TokenType.INT;
+        self.parseInteger(tok);
+
+        const p = self.peek() catch return;
+        if (p != '.') {
+            return;
+        }
+        self.parseDecimalPart(tok);
+    }
+
+    fn parseDecimalPart(self: *Scanner, tok: *Token) void {
+        tok.tokenType = TokenType.FLOAT;
+        // Consume ".".
+        self.advance();
+        self.parseInteger(tok);
+    }
+
+    fn parseInteger(self: *Scanner, tok: *Token) void {
+        // TODO(jsfpdn): Implement binary/octal/hexadecimal number parsing.
         while (true and !self.eof()) {
             const d = self.peek() catch unreachable;
             if (!isNumeric(d)) {
-                tok.bufferLoc.end = self.offset;
+                tok.bufferLoc.end = self.offset - 1;
                 return;
             }
             self.advance();
         }
     }
 
-    pub fn parseStringLiteral(self: *Scanner, tok: *Token) void {
-        // TODO(jsfpdn): implement me.
-        _ = self;
-        _ = tok;
+    fn parseBuiltin(self: *Scanner, tok: *Token) void {
+        self.parseIdent(tok);
+        const s = self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
+        if (token.TokenType.getBuiltin(s)) |builtin| {
+            tok.tokenType = builtin;
+            return;
+        }
+        // TODO(jsfpdn): Handle error reporting when such builtin does not exist.
+        //               Parser could recover from this error - just skip this token.
     }
 
-    pub fn parseSinglelineComment(self: *Scanner, tok: *Token) void {
+    fn parseStringLiteral(self: *Scanner, tok: *Token) void {
+        tok.tokenType = TokenType.STRING;
+        var escaped = false;
+
+        while (true) {
+            if (self.eof()) {
+                tok.bufferLoc.end = self.offset - 1;
+                tok.tokenType = TokenType.ILLEGAL;
+                // TODO(jsfpdn): error reporting: unclosed string literal.
+                return;
+            }
+
+            const p = self.peek() catch unreachable;
+
+            self.advance();
+            if (p == '"' and !escaped) {
+                tok.bufferLoc.end = self.offset - 1;
+                return;
+            }
+
+            escaped = p == '\\';
+        }
+    }
+
+    fn parseSinglelineComment(self: *Scanner, tok: *Token) void {
         var p = self.peek() catch unreachable;
         if (p != '/') unreachable;
         // Conusme the '/'.
@@ -197,7 +217,7 @@ pub const Scanner = struct {
         }
     }
 
-    pub fn parseMultilineComment(self: *Scanner, tok: *Token) void {
+    fn parseMultilineComment(self: *Scanner, tok: *Token) void {
         var toBeClosed: u32 = 1;
         while (true) {
             self.advance();
@@ -298,7 +318,7 @@ pub const Scanner = struct {
         }
     }
 
-    pub fn eatWhitespace(self: *Scanner) void {
+    fn eatWhitespace(self: *Scanner) void {
         while (true and !self.eof()) {
             const c = self.peek() catch unreachable;
             switch (c) {
@@ -308,7 +328,7 @@ pub const Scanner = struct {
         }
     }
 
-    pub fn eof(self: *Scanner) bool {
+    fn eof(self: *Scanner) bool {
         return self.offset >= self.contents.len;
     }
 
