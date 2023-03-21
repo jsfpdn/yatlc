@@ -88,11 +88,10 @@ pub const Scanner = struct {
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
                 const p = self.peek() catch return tok;
-
-                if (p == '/' or p == '*') {
-                    // TODO(jsfpdn): parse comments.
-                } else {
-                    self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO);
+                switch (p) {
+                    '/' => self.parseSinglelineComment(&tok),
+                    '*' => self.parseMultilineComment(&tok),
+                    else => self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO),
                 }
             },
             'a'...'z', 'A'...'Z', '_' => {
@@ -153,6 +152,7 @@ pub const Scanner = struct {
     }
 
     pub fn parseInteger(self: *Scanner, tok: *Token) void {
+        // TODO(jsfpdn): fixme.
         while (true and !self.eof()) {
             const d = self.peek() catch unreachable;
             if (!isNumeric(d)) {
@@ -167,6 +167,87 @@ pub const Scanner = struct {
         // TODO(jsfpdn): implement me.
         _ = self;
         _ = tok;
+    }
+
+    pub fn parseSinglelineComment(self: *Scanner, tok: *Token) void {
+        var p = self.peek() catch unreachable;
+        if (p != '/') unreachable;
+        // Conusme the '/'.
+        self.advance();
+
+        while (true) {
+            // TODO(jsfpdn): refactor me!
+            if (self.eof()) {
+                tok.tokenType = TokenType.COMMENT;
+                tok.bufferLoc.end = self.offset - 1;
+                return;
+            }
+
+            p = self.peek() catch unreachable;
+
+            if (p == '\n') {
+                tok.tokenType = TokenType.COMMENT;
+                tok.bufferLoc.end = self.offset - 1;
+
+                self.advance();
+                return;
+            }
+
+            self.advance();
+        }
+    }
+
+    pub fn parseMultilineComment(self: *Scanner, tok: *Token) void {
+        var toBeClosed: u32 = 1;
+        while (true) {
+            self.advance();
+            if (toBeClosed == 0) {
+                tok.tokenType = TokenType.COMMENT;
+                if (self.eof()) {
+                    tok.bufferLoc.end = self.offset - 1;
+                } else {
+                    tok.bufferLoc.end = self.offset - 2;
+                }
+                return;
+            }
+
+            if (self.eof()) {
+                // TODO(jsfpdn): error handling - report message 'multiline comment not closed'
+                tok.tokenType = TokenType.ILLEGAL;
+                tok.bufferLoc.end = self.offset - 1;
+                return;
+            }
+
+            if (self.followsCommentOpening()) {
+                toBeClosed += 1;
+            } else if (self.followsCommentClosing()) {
+                toBeClosed -= 1;
+            }
+        }
+    }
+
+    fn followsCommentOpening(self: *Scanner) bool {
+        const p = self.peek() catch return false;
+        const pn = self.peekNext() catch return false;
+
+        if ((p == '/') and (pn == '*')) {
+            self.advance();
+            self.advance();
+            return true;
+        }
+        return false;
+    }
+
+    fn followsCommentClosing(self: *Scanner) bool {
+        const p = self.peek() catch return false;
+        const pn = self.peekNext() catch return false;
+
+        if (p == '*' and pn == '/') {
+            self.advance();
+            self.advance();
+            return true;
+        }
+        return false;
     }
 
     fn advance(self: *Scanner) void {
@@ -237,6 +318,12 @@ pub const Scanner = struct {
         return self.contents[self.offset];
     }
 
+    fn peekNext(self: *Scanner) !u8 {
+        if (self.offset + 1 >= self.contents.len) return error.EOF;
+
+        return self.contents[self.offset + 1];
+    }
+
     fn consume(self: *Scanner) !u8 {
         if (self.eof()) return error.EOF;
 
@@ -249,7 +336,6 @@ pub const Scanner = struct {
     pub fn symbol(self: Scanner, tok: Token) []const u8 {
         switch (tok.tokenType) {
             TokenType.EOF => return "EOF",
-            TokenType.ILLEGAL => return "ILLEGAL",
             else => {},
         }
 

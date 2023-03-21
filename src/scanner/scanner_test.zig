@@ -99,12 +99,62 @@ test "scan invalid tokens" {
     var s = createTestScanner("  ____ @nonExisting_Builtin2 \n");
 
     var tok = s.next();
-    try std.testing.expectEqualStrings("ILLEGAL", s.symbol(tok));
+    try std.testing.expectEqualStrings("____", s.symbol(tok));
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
 
     tok = s.next();
-    try std.testing.expectEqualStrings("ILLEGAL", s.symbol(tok));
+    try std.testing.expectEqualStrings("@nonExisting_Builtin2", s.symbol(tok));
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
 }
 
-test "scan integer literals" {}
+test "scan integer literals" {
+    // TODO(jsfpdn): implement me.
+}
+
+test "scan comments" {
+    var s = createTestScanner(
+        \\ // This is a comment 1!
+        \\      // This is a // comment 2!
+        \\
+        \\ /* multiline comment! */
+        \\ /* multiline comment!
+        \\      /* nested multiline comment! */
+        \\  this is also a comment */
+    );
+
+    var tok = s.next();
+    try std.testing.expectEqualStrings("// This is a comment 1!", s.symbol(tok));
+    try std.testing.expectEqual(TokenType.COMMENT, tok.tokenType);
+
+    tok = s.next();
+    try std.testing.expectEqualStrings("// This is a // comment 2!", s.symbol(tok));
+    try std.testing.expectEqual(TokenType.COMMENT, tok.tokenType);
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.COMMENT, tok.tokenType);
+    try std.testing.expectEqualStrings("/* multiline comment! */", s.symbol(tok));
+
+    tok = s.next();
+    try std.testing.expectEqual(TokenType.COMMENT, tok.tokenType);
+
+    const nestedComment =
+        \\/* multiline comment!
+        \\      /* nested multiline comment! */
+        \\  this is also a comment */
+    ;
+
+    try std.testing.expectEqualStrings(nestedComment, s.symbol(tok));
+}
+
+test "scan malformed multiline comments" {
+    const comment =
+        \\/* multiline comment that won't close!
+        \\      /* nested multiline comment! */
+    ;
+
+    var s = createTestScanner(comment);
+
+    var tok = s.next();
+    try std.testing.expectEqualStrings(comment, s.symbol(tok));
+    try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
+}
