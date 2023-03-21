@@ -1,16 +1,10 @@
 const std = @import("std");
 
 const token = @import("token.zig");
+const reporter = @import("reporter.zig");
+
 const Token = token.Token;
 const TokenType = token.TokenType;
-
-pub fn createScanner(contents: []const u8, errReporter: *const fn (Token, []const u8) void) Scanner {
-    return Scanner{ .contents = contents, .errReporter = errReporter, .offset = 0, .charOffset = 1, .lineOffset = 1 };
-}
-
-pub fn defaultReporter(tok: Token, msg: []const u8) void {
-    std.debug.print("error: {s}: {s}\n", .{ @tagName(tok.tokenType), msg });
-}
 
 pub const Scanner = struct {
     contents: []const u8, // Source code
@@ -20,7 +14,21 @@ pub const Scanner = struct {
     charOffset: usize, // Together with Scanner.lineOffset, describes the current location of scanner
     lineOffset: usize, // Together with Scanner.charOffset, describes the current location of scanner
 
-    errReporter: *const fn (Token, []const u8) void,
+    reporter: *const reporter.Reporter,
+
+    errorMessage: []const u8,
+
+    pub fn init(contents: []const u8, r: *const reporter.Reporter) Scanner {
+        return .{
+            .contents = contents,
+            .reporter = r,
+
+            .offset = 0,
+            .charOffset = 1,
+            .lineOffset = 1,
+            .errorMessage = "",
+        };
+    }
 
     // TODO(jsfpdn): inject an errorHandler/reporter.
     // TODO(jsfpdn): Think about error recovery during lexical analysis. It would be nice to report an
@@ -86,11 +94,21 @@ pub const Scanner = struct {
                     else => self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO),
                 }
             },
-            else => unreachable,
+            else => self.errorMessage = "Unrecognized token",
         }
 
         tok.symbol = self.symbol(tok);
+        if (tok.tokenType == TokenType.ILLEGAL) {
+            self.reporter.report(tok, self.errorMessage);
+            self.errorMessage = "";
+        }
+
         return tok;
+    }
+
+    /// eof denotes whether end-of-file has been reached.
+    pub fn eof(self: *Scanner) bool {
+        return self.offset >= self.contents.len;
     }
 
     fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
@@ -109,7 +127,7 @@ pub const Scanner = struct {
 
             if (!otherThanUnderscore) {
                 tok.tokenType = TokenType.ILLEGAL;
-                // TODO(jsfpdn): error reporting: identifier must not be composed entirely from underscores.
+                self.errorMessage = "Identifier cannot be composed entirely from underscores";
             }
         }
     }
@@ -166,8 +184,8 @@ pub const Scanner = struct {
             tok.tokenType = builtin;
             return;
         }
-        // TODO(jsfpdn): Handle error reporting when such builtin does not exist.
-        //               Parser could recover from this error - just skip this token.
+        tok.tokenType = TokenType.ILLEGAL;
+        self.errorMessage = "Builtin function does not exist";
     }
 
     fn parseStringLiteral(self: *Scanner, tok: *Token) void {
@@ -178,7 +196,7 @@ pub const Scanner = struct {
             if (self.eof()) {
                 tok.bufferLoc.end = self.offset - 1;
                 tok.tokenType = TokenType.ILLEGAL;
-                // TODO(jsfpdn): error reporting: unclosed string literal.
+                self.errorMessage = "String literal is not closed with quotes";
                 return;
             }
 
@@ -237,7 +255,7 @@ pub const Scanner = struct {
             }
 
             if (self.eof()) {
-                // TODO(jsfpdn): error handling - report message 'multiline comment not closed'
+                self.errorMessage = "Multiline comment not closed with '*/'";
                 tok.tokenType = TokenType.ILLEGAL;
                 tok.bufferLoc.end = self.offset - 1;
                 return;
@@ -331,10 +349,6 @@ pub const Scanner = struct {
                 else => return,
             }
         }
-    }
-
-    fn eof(self: *Scanner) bool {
-        return self.offset >= self.contents.len;
     }
 
     fn peek(self: *Scanner) !u8 {

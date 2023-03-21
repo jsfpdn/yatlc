@@ -1,16 +1,25 @@
 const std = @import("std");
 
 const scanner = @import("scanner.zig");
-const defaultReporter = scanner.defaultReporter;
+const Scanner = scanner.Scanner;
 
 const token = @import("token.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 
+const reporter = @import("reporter.zig");
+const Reporter = reporter.Reporter;
+
 test {
     // Driver code to run all tests in this package.
     std.testing.refAllDeclsRecursive(token);
     std.testing.refAllDeclsRecursive(@This());
+}
+
+fn testScanner(contents: []const u8) Scanner {
+    // TODO(jsfpdn): Fix all this mess.
+    var r = &Reporter.init(contents, "testing_file");
+    return Scanner.init(contents, r);
 }
 
 fn expectTokensEqual(want: Token, got: Token) !void {
@@ -23,14 +32,14 @@ fn expectTokensEqual(want: Token, got: Token) !void {
 }
 
 test "eat EOF" {
-    var s = scanner.createScanner("", defaultReporter);
+    var s = testScanner("");
 
     const tok = s.next();
     try expectTokensEqual(Token{ .tokenType = TokenType.EOF, .bufferLoc = Token.BufferLoc{ .start = 0, .end = 0 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 1 }, .symbol = "EOF" }, tok);
 }
 
 test "OP and OP_ASSIGN tokens" {
-    var s = scanner.createScanner(" += +   -= -", defaultReporter);
+    var s = Scanner.init(" += +   -= -", Reporter.init());
 
     const tokAddAssign = s.next();
     try expectTokensEqual(Token{ .tokenType = TokenType.ADD_ASSIGN, .bufferLoc = Token.BufferLoc{ .start = 1, .end = 2 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 2 }, .symbol = "+=" }, tokAddAssign);
@@ -72,7 +81,7 @@ test "scan identifiers, keywords, and builtin" {
         .{ .symbol = "EOF", .tokenType = TokenType.EOF },
     };
 
-    var s = scanner.createScanner("break continue \n\t else if return while identifier Identifier Identifier2 __Ident_ifier_ @toBool \t\n @toInt @toFloat @len @print @read \n\t", defaultReporter);
+    var s = scanner.createScanner("break continue \n\t else if return while identifier Identifier Identifier2 __Ident_ifier_ @toBool \t\n @toInt @toFloat @len @print @read \n\t", Reporter.init());
 
     var tok: token.Token = undefined;
     for (cases) |tc| {
@@ -84,7 +93,7 @@ test "scan identifiers, keywords, and builtin" {
 
 test "scan invalid tokens" {
     // TODO(jsfpdn): Once error reporting is set up, test it here as well.
-    var s = scanner.createScanner("  ____ @nonExisting_Builtin2 \n", defaultReporter);
+    var s = scanner.createScanner("  ____ @nonExisting_Builtin2 \n", Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqualStrings("____", tok.symbol);
@@ -96,7 +105,7 @@ test "scan invalid tokens" {
 }
 
 test "scan number literals" {
-    var s = scanner.createScanner("123 0 0123 .23 123.45 0b1001 0x14AaF 0o1237", defaultReporter);
+    var s = scanner.createScanner("123 0 0123 .23 123.45 0b1001 0x14AaF 0o1237", Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqual(TokenType.INT, tok.tokenType);
@@ -141,7 +150,7 @@ test "scan string literals" {
         \\ "this is a string literal!" "multiline
         \\string literal!"
         \\ "this has \" escaped quotes!"
-    , defaultReporter);
+    , Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqual(TokenType.STRING, tok.tokenType);
@@ -157,7 +166,7 @@ test "scan string literals" {
 }
 
 test "scan unclosed string literals" {
-    var s = scanner.createScanner("\"look at me, I'm unclosed!", defaultReporter);
+    var s = scanner.createScanner("\"look at me, I'm unclosed!", Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
@@ -173,7 +182,7 @@ test "scan comments" {
         \\ /* multiline comment!
         \\      /* nested multiline comment! */
         \\  this is also a comment */
-    , defaultReporter);
+    , Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqualStrings("// This is a comment 1!", tok.symbol);
@@ -205,7 +214,7 @@ test "scan malformed multiline comments" {
         \\      /* nested multiline comment! */
     ;
 
-    var s = scanner.createScanner(comment, defaultReporter);
+    var s = scanner.createScanner(comment, Reporter.init());
 
     var tok = s.next();
     try std.testing.expectEqualStrings(comment, tok.symbol);

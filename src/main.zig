@@ -7,6 +7,7 @@ const io = std.io;
 // TODO(jsfpdn): Simplify imports (single main.zig file exporting all the necessary symbols in all sub-libraries)
 
 const scanner = @import("scanner/scanner.zig");
+const reporter = @import("scanner/reporter.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 
@@ -66,6 +67,12 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    var s = scanner.createScanner(contents, scanner.defaultReporter);
-    _ = s;
+    var r = reporter.Reporter.init(contents, filePath);
+    var s = scanner.Scanner.init(contents, &r);
+
+    while (!s.eof()) {
+        const t = s.next();
+        _ = t;
+        // std.debug.print("({d}:{d}) {s} ({s})\n", .{ t.sourceLoc.line, t.sourceLoc.column, t.symbol, @tagName(t.tokenType) });
+    }
 }
