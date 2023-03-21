@@ -4,10 +4,9 @@ const clap = @import("clap");
 const fs = std.fs;
 const io = std.io;
 
-// TODO(jsfpdn): create error reporter.
+// TODO(jsfpdn): Simplify imports (single main.zig file exporting all the necessary symbols in all sub-libraries)
 
 const scanner = @import("scanner/scanner.zig");
-const logger = @import("logger/logger.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 
@@ -46,10 +45,8 @@ pub fn main() !void {
         return;
     }
 
-    const log: logger.Logger = logger.Logger{ .verbose = res.args.verbose };
-
     if (res.positionals.len != 1) {
-        log.err("Path to exactly one source file must be supplied!\n", .{});
+        std.log.err("Path to exactly one source file must be supplied!\n", .{});
         try showUsage(errWriter);
         return;
     }
@@ -57,7 +54,7 @@ pub fn main() !void {
     const filePath = res.positionals[0];
 
     const file: fs.File = fs.cwd().openFile(filePath, .{}) catch |err| {
-        log.err("could not open file {s}: {s}", .{ filePath, @errorName(err) });
+        std.log.err("could not open file {s}: {s}", .{ filePath, @errorName(err) });
         return;
     };
     defer file.close();
@@ -69,6 +66,6 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    const tok = scanner.Scanner{ .contents = contents, .log = log };
-    _ = tok;
+    var s = scanner.createScanner(contents, scanner.defaultReporter);
+    _ = s;
 }

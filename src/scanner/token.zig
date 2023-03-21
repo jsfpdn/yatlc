@@ -5,6 +5,7 @@ pub const Token = struct {
     tokenType: TokenType,
     bufferLoc: BufferLoc,
     sourceLoc: SourceLoc,
+    symbol: []const u8,
 
     pub const BufferLoc = struct {
         start: usize,
@@ -16,7 +17,7 @@ pub const Token = struct {
         column: usize,
     };
 
-    pub fn len(self: *Token) usize {
+    pub fn len(self: Token) usize {
         return self.bufferLoc.end - self.bufferLoc.start;
     }
 };

@@ -4,10 +4,12 @@ const token = @import("token.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 
-const logger = @import("../logger/logger.zig");
+pub fn createScanner(contents: []const u8, errReporter: *const fn (Token, []const u8) void) Scanner {
+    return Scanner{ .contents = contents, .errReporter = errReporter, .offset = 0, .charOffset = 1, .lineOffset = 1 };
+}
 
-pub fn createScanner(contents: []const u8, log: logger.Logger) Scanner {
-    return Scanner{ .contents = contents, .log = log, .offset = 0, .charOffset = 1, .lineOffset = 1 };
+pub fn defaultReporter(tok: Token, msg: []const u8) void {
+    std.debug.print("error: {s}: {s}\n", .{ @tagName(tok.tokenType), msg });
 }
 
 pub const Scanner = struct {
@@ -18,7 +20,7 @@ pub const Scanner = struct {
     charOffset: usize, // Together with Scanner.lineOffset, describes the current location of scanner
     lineOffset: usize, // Together with Scanner.charOffset, describes the current location of scanner
 
-    log: logger.Logger,
+    errReporter: *const fn (Token, []const u8) void,
 
     // TODO(jsfpdn): inject an errorHandler/reporter.
     // TODO(jsfpdn): Think about error recovery during lexical analysis. It would be nice to report an
@@ -31,10 +33,12 @@ pub const Scanner = struct {
             .tokenType = TokenType.ILLEGAL,
             .bufferLoc = Token.BufferLoc{ .start = self.offset, .end = self.offset },
             .sourceLoc = Token.SourceLoc{ .line = self.lineOffset, .column = self.charOffset },
+            .symbol = "",
         };
 
         if (self.eof()) {
             tok.tokenType = TokenType.EOF;
+            tok.symbol = "EOF";
             return tok;
         }
 
@@ -67,10 +71,11 @@ pub const Scanner = struct {
                 // Either a single period or a floating point number with just a decimal part.
                 tok.tokenType = TokenType.PERIOD;
 
-                const p = self.peek() catch return tok;
-                if (isNumeric(p)) {
-                    self.parseDecimalPart(&tok);
-                }
+                if (self.peek()) |p| {
+                    if (isNumeric(p)) {
+                        self.parseDecimalPart(&tok);
+                    }
+                } else |_| {}
             },
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
@@ -84,7 +89,7 @@ pub const Scanner = struct {
             else => unreachable,
         }
 
-        // TODO: error handling.
+        tok.symbol = self.symbol(tok);
         return tok;
     }
 
@@ -353,7 +358,7 @@ pub const Scanner = struct {
     }
 
     // Return the actual symbol (lexeme) of the particular token.
-    pub fn symbol(self: Scanner, tok: Token) []const u8 {
+    fn symbol(self: Scanner, tok: Token) []const u8 {
         switch (tok.tokenType) {
             TokenType.EOF => return "EOF",
             else => {},
