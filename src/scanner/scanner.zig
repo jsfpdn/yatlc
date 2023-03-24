@@ -30,10 +30,6 @@ pub const Scanner = struct {
         };
     }
 
-    // TODO(jsfpdn): inject an errorHandler/reporter.
-    // TODO(jsfpdn): Think about error recovery during lexical analysis. It would be nice to report an
-    //       error to a parser but still be able to continue.
-
     pub fn next(self: *Scanner) token.Token {
         self.eatWhitespace();
 

@@ -67,7 +67,7 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    var r = reporter.Reporter.init(contents, filePath);
+    var r = reporter.Reporter.init(contents, filePath, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, &r);
 
     while (!s.eof()) {
