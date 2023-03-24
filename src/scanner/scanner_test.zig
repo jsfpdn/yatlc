@@ -120,9 +120,9 @@ test "scan number literals" {
         .{ .symbol = "0123", .tokenType = TokenType.INT },
         .{ .symbol = ".23", .tokenType = TokenType.FLOAT },
         .{ .symbol = "123.45", .tokenType = TokenType.FLOAT },
-        //     .{ .symbol = "0b1001", .tokenType = TokenType.INT },
-        //     .{ .symbol = "0x14AaF", .tokenType = TokenType.INT },
-        //     .{ .symbol = "0o1237", .tokenType = TokenType.INT },
+        .{ .symbol = "0b1001", .tokenType = TokenType.INT },
+        .{ .symbol = "0x14AaF", .tokenType = TokenType.INT },
+        .{ .symbol = "0o1237", .tokenType = TokenType.INT },
     };
 
     var tok: token.Token = undefined;
@@ -131,10 +131,6 @@ test "scan number literals" {
         try std.testing.expectEqualStrings(tc.symbol, tok.symbol);
         try std.testing.expectEqual(tc.tokenType, tok.tokenType);
     }
-}
-
-test "scan malformed number literals" {
-    // TODO(jsfpdn): Test binary numbers with digits > 1 etc.
 }
 
 test "scan string literals" {

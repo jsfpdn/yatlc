@@ -70,14 +70,16 @@ pub const Scanner = struct {
             '"' => self.parseStringLiteral(&tok),
             '@' => self.parseBuiltin(&tok),
             'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
-            '0'...'9' => self.parseNumber(&tok),
+            '0'...'9' => self.parseNumber(&tok, c),
             '.' => {
                 // Either a single period or a floating point number with just a decimal part.
                 tok.tokenType = TokenType.PERIOD;
 
                 if (self.peek()) |p| {
                     if (isNumeric(p)) {
-                        self.parseDecimalPart(&tok);
+                        tok.tokenType = TokenType.FLOAT;
+                        self.advance();
+                        self.parseInteger(&tok, 10);
                     }
                 } else |_| {}
             },
@@ -143,34 +145,99 @@ pub const Scanner = struct {
         }
     }
 
-    fn parseNumber(self: *Scanner, tok: *Token) void {
+    fn parseNumber(self: *Scanner, tok: *Token, leading: u8) void {
         tok.tokenType = TokenType.INT;
-        self.parseInteger(tok);
+
+        var base = @as(usize, 10);
+        if (leading == '0') {
+            // Check for '0x', '0o' and '0b' prefixes.
+            const pn = self.peek() catch unreachable;
+            switch (pn) {
+                'x' => base = 16,
+                'o' => base = 8,
+                'b' => base = 2,
+                else => {},
+            }
+
+            if (base != 10) {
+                // Step over 'x', 'o', or 'b' prefix.
+                self.advance();
+            }
+        }
+
+        self.parseInteger(tok, base);
 
         const p = self.peek() catch return;
         if (p != '.') {
             return;
         }
-        self.parseDecimalPart(tok);
-    }
-
-    fn parseDecimalPart(self: *Scanner, tok: *Token) void {
         tok.tokenType = TokenType.FLOAT;
-        // Consume ".".
         self.advance();
-        self.parseInteger(tok);
+        self.parseInteger(tok, base);
     }
 
-    fn parseInteger(self: *Scanner, tok: *Token) void {
-        // TODO(jsfpdn): Implement binary/octal/hexadecimal number parsing.
-        while (true and !self.eof()) {
-            const d = self.peek() catch unreachable;
-            if (!isNumeric(d)) {
-                tok.bufferLoc.end = self.offset - 1;
+    fn parseInteger(self: *Scanner, tok: *Token, base: usize) void {
+        _ = self.peek() catch |err| switch (err) {
+            error.EOF => {
+                self.errorMessage = "number literal must not be empty";
                 return;
-            }
-            self.advance();
+            },
+        };
+
+        switch (base) {
+            16 => self.parseHexadecimal(tok),
+            10 => self.parseDecimal(tok),
+            8 => self.parseOctal(tok),
+            2 => self.parseBinary(tok),
+            else => @panic("number must be in base 16, 10, 8, or 2!"),
         }
+    }
+
+    fn parseDecimal(self: *Scanner, tok: *Token) void {
+        while (!self.eof()) {
+            const d = self.peek() catch break;
+            switch (d) {
+                '0'...'9' => self.advance(),
+                else => break,
+            }
+        }
+
+        tok.bufferLoc.end = self.offset - 1;
+    }
+
+    fn parseHexadecimal(self: *Scanner, tok: *Token) void {
+        while (!self.eof()) {
+            const d = self.peek() catch break;
+            switch (d) {
+                '0'...'9', 'a'...'f', 'A'...'F' => self.advance(),
+                else => break,
+            }
+        }
+
+        tok.bufferLoc.end = self.offset - 1;
+    }
+
+    fn parseOctal(self: *Scanner, tok: *Token) void {
+        while (!self.eof()) {
+            const d = self.peek() catch break;
+            switch (d) {
+                '0'...'7' => self.advance(),
+                else => break,
+            }
+        }
+        tok.bufferLoc.end = self.offset - 1;
+    }
+
+    fn parseBinary(self: *Scanner, tok: *Token) void {
+        while (!self.eof()) {
+            const d = self.peek() catch break;
+            switch (d) {
+                '0', '1' => self.advance(),
+                else => break,
+            }
+        }
+
+        tok.bufferLoc.end = self.offset - 1;
     }
 
     fn parseBuiltin(self: *Scanner, tok: *Token) void {
@@ -214,26 +281,19 @@ pub const Scanner = struct {
         // Conusme the '/'.
         self.advance();
 
-        while (true) {
-            // TODO(jsfpdn): refactor me!
-            if (self.eof()) {
-                tok.tokenType = TokenType.COMMENT;
-                tok.bufferLoc.end = self.offset - 1;
-                return;
-            }
-
+        while (!self.eof()) {
             p = self.peek() catch unreachable;
 
             if (p == '\n') {
-                tok.tokenType = TokenType.COMMENT;
-                tok.bufferLoc.end = self.offset - 1;
-
-                self.advance();
-                return;
+                break;
             }
 
             self.advance();
         }
+
+        tok.tokenType = TokenType.COMMENT;
+        tok.bufferLoc.end = self.offset - 1;
+        self.advance();
     }
 
     fn parseMultilineComment(self: *Scanner, tok: *Token) void {
