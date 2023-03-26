@@ -1,5 +1,6 @@
 const std = @import("std");
 const clap = @import("clap");
+const builtin = @import("builtin");
 
 const fs = std.fs;
 const io = std.io;
@@ -7,15 +8,17 @@ const io = std.io;
 // TODO(jsfpdn): Simplify imports (single main.zig file exporting all the necessary symbols in all sub-libraries)
 
 const scanner = @import("scanner/scanner.zig");
-const reporter = @import("scanner/reporter.zig");
+const reporter = @import("reporter/reporter.zig");
+const parser = @import("parser/parser.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 
 const description = "yatlc is a yet-another-toy-language compiler.";
 const params = clap.parseParamsComptime(
-    \\-h, --help        Show this help message
-    \\-v, --verbose     Print debug information
-    \\<str>             Path to a source file to be compiled
+    \\-h, --help            Show this help message
+    \\-v, --verbose         Print debug information
+    \\-t, --emittokens     Emit tokens from lexical analysis to a .t file
+    \\<str>                 Path to a source file to be compiled
     \\
 );
 
@@ -31,6 +34,10 @@ fn showUsage(writer: anytype) !void {
 }
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
     var diag = clap.Diagnostic{};
     const errWriter = io.getStdErr().writer();
 
@@ -53,7 +60,6 @@ pub fn main() !void {
     }
 
     const filePath = res.positionals[0];
-
     const file: fs.File = fs.cwd().openFile(filePath, .{}) catch |err| {
         std.log.err("could not open file {s}: {s}", .{ filePath, @errorName(err) });
         return;
@@ -61,18 +67,18 @@ pub fn main() !void {
     defer file.close();
 
     const reader = file.reader();
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
-    var r = reporter.Reporter.init(contents, filePath, io.getStdErr().writer());
-    var s = scanner.Scanner.init(contents, &r);
-
-    while (!s.eof()) {
-        const t = s.next();
-        _ = t;
-        // std.debug.print("({d}:{d}) {s} ({s})\n", .{ t.sourceLoc.line, t.sourceLoc.column, t.symbol, @tagName(t.tokenType) });
+    var w: ?std.fs.File.Writer = null;
+    if (res.args.emittokens) {
+        const f = try std.fs.cwd().createFile("out.t", .{ .read = false, .truncate = true });
+        w = f.writer();
     }
+
+    var r = reporter.Reporter.init(contents, filePath, io.getStdErr().writer());
+    var s = scanner.Scanner.init(contents, r, w);
+    var p = parser.Parser.init(s, r);
+
+    p.parse();
 }

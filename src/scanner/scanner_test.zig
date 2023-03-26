@@ -7,7 +7,7 @@ const token = @import("token.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 
-const reporter = @import("reporter.zig");
+const reporter = @import("../reporter/reporter.zig");
 const Reporter = reporter.Reporter;
 
 test {
@@ -29,8 +29,7 @@ fn expectTokensEqual(want: Token, got: Token) !void {
 
 test "eat EOF" {
     const contents = "";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const tok = s.next();
     try expectTokensEqual(Token{ .tokenType = TokenType.EOF, .bufferLoc = Token.BufferLoc{ .start = 0, .end = 0 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 1 }, .symbol = "EOF" }, tok);
@@ -38,8 +37,7 @@ test "eat EOF" {
 
 test "OP and OP_ASSIGN tokens with locations" {
     const contents = " += +   -= -";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const cases = [_]Token{
         Token{ .tokenType = TokenType.ADD_ASSIGN, .bufferLoc = Token.BufferLoc{ .start = 1, .end = 2 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 2 }, .symbol = "+=" },
@@ -79,8 +77,7 @@ test "scan identifiers, keywords, and builtin" {
     };
 
     const contents = "break continue \n\t else if return while identifier Identifier Identifier2 __Ident_ifier_ @toBool \t\n @toInt @toFloat @len @print @read \n\t";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     var tok: token.Token = undefined;
     for (cases) |tc| {
@@ -92,8 +89,7 @@ test "scan identifiers, keywords, and builtin" {
 
 test "scan invalid tokens" {
     const contents = "  _ \t\n ____ @nonExisting_Builtin2 \n";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const cases = [_]tuple{
         .{ .symbol = "_", .tokenType = TokenType.ILLEGAL },
@@ -111,8 +107,7 @@ test "scan invalid tokens" {
 
 test "scan number literals" {
     const contents = "123 0 0123 .23 123.45 0b1001 0x14AaF 0o1237";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const cases = [_]tuple{
         .{ .symbol = "123", .tokenType = TokenType.INT },
@@ -140,8 +135,7 @@ test "scan string literals" {
         \\ "this has \" escaped quotes!"
     ;
 
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const cases = [_]tuple{
         .{ .symbol = "\"this is a string literal!\"", .tokenType = TokenType.STRING },
@@ -159,8 +153,7 @@ test "scan string literals" {
 
 test "scan unclosed string literals" {
     const contents = "\"look at me, I'm unclosed!";
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     var tok = s.next();
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
@@ -177,8 +170,7 @@ test "scan comments" {
         \\      /* nested multiline comment! */
         \\  this is also a comment */
     ;
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     const nestedComment =
         \\/* multiline comment!
@@ -206,8 +198,7 @@ test "scan malformed multiline comments" {
         \\/* multiline comment that won't close!
         \\      /* nested multiline comment! */
     ;
-    var r = &Reporter.init(contents, "testing_file", std.io.getStdOut().writer());
-    var s = Scanner.init(contents, r);
+    var s = Scanner.init(contents, null, null);
 
     var tok = s.next();
     try std.testing.expectEqualStrings(contents, tok.symbol);

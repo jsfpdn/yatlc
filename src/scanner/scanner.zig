@@ -1,10 +1,10 @@
 const std = @import("std");
 
 const token = @import("token.zig");
-const reporter = @import("reporter.zig");
+const reporter = @import("../reporter/reporter.zig");
 
-const Token = token.Token;
-const TokenType = token.TokenType;
+pub const Token = token.Token;
+pub const TokenType = token.TokenType;
 
 pub const Scanner = struct {
     contents: []const u8, // Source code
@@ -14,11 +14,18 @@ pub const Scanner = struct {
     charOffset: usize, // Together with Scanner.lineOffset, describes the current location of scanner
     lineOffset: usize, // Together with Scanner.charOffset, describes the current location of scanner
 
-    reporter: *const reporter.Reporter,
-
+    // reporter is used for reporting error messages.
+    reporter: ?reporter.Reporter,
+    // errorMessage describes currently encountered error.
     errorMessage: []const u8,
 
-    pub fn init(contents: []const u8, r: *const reporter.Reporter) Scanner {
+    // tokenWriter is used for writing tokens.
+    tokenWriter: ?std.fs.File.Writer,
+    // lastToken is used for proper line breaking when writing tokens to the writer.
+    lastToken: ?Token,
+
+    /// Init prepares the scanner for lexical analysis.
+    pub fn init(contents: []const u8, r: ?reporter.Reporter, tokenWriter: ?std.fs.File.Writer) Scanner {
         return .{
             .contents = contents,
             .reporter = r,
@@ -27,9 +34,18 @@ pub const Scanner = struct {
             .charOffset = 1,
             .lineOffset = 1,
             .errorMessage = "",
+
+            .tokenWriter = tokenWriter,
+            .lastToken = null,
         };
     }
 
+    /// Next reads the source code and returns the next lexem.
+    ///
+    /// If any error was encountered, it is reported to the reporter.
+    ///
+    /// If tokenWriter was supplied during the initialization, the analyzed token
+    /// is formatted and written to it.
     pub fn next(self: *Scanner) token.Token {
         self.eatWhitespace();
 
@@ -39,6 +55,8 @@ pub const Scanner = struct {
             .sourceLoc = Token.SourceLoc{ .line = self.lineOffset, .column = self.charOffset },
             .symbol = "",
         };
+
+        defer self.emitToken(tok);
 
         if (self.eof()) {
             tok.tokenType = TokenType.EOF;
@@ -97,8 +115,10 @@ pub const Scanner = struct {
 
         tok.symbol = self.symbol(tok);
         if (tok.tokenType == TokenType.ILLEGAL) {
-            self.reporter.report(tok, self.errorMessage);
-            self.errorMessage = "";
+            if (self.reporter) |r| {
+                r.report(tok, self.errorMessage);
+                self.errorMessage = "";
+            }
         }
 
         return tok;
@@ -427,7 +447,7 @@ pub const Scanner = struct {
         return c;
     }
 
-    // Return the actual symbol (lexeme) of the particular token.
+    /// Return the actual symbol (lexeme) of the particular token.
     fn symbol(self: Scanner, tok: Token) []const u8 {
         switch (tok.tokenType) {
             TokenType.EOF => return "EOF",
@@ -435,6 +455,24 @@ pub const Scanner = struct {
         }
 
         return self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
+    }
+
+    /// Emit the supplied token to a writer if the writer was provided.
+    fn emitToken(self: *Scanner, tok: Token) void {
+        if (self.tokenWriter) |writer| {
+            if (self.lastToken) |ltok| {
+                if (ltok.sourceLoc.line < tok.sourceLoc.line) {
+                    wrappedPrint(writer, "\n", .{});
+                }
+            }
+
+            wrappedPrint(writer, "({s}: '{s}') ", .{ @tagName(tok.tokenType), tok.symbol });
+            if (tok.tokenType == TokenType.EOF) {
+                wrappedPrint(writer, "\n", .{});
+            }
+
+            self.lastToken = tok;
+        }
     }
 };
 
@@ -447,4 +485,12 @@ fn isAlphanumeric(c: u8) bool {
 
 fn isNumeric(c: u8) bool {
     return c >= '0' and c <= '9';
+}
+
+/// wrappedPrint is a convenience function to panic when encountering error during printing via writer.
+fn wrappedPrint(writer: std.fs.File.Writer, comptime format: []const u8, args: anytype) void {
+    writer.print(format, args) catch |err| {
+        std.debug.print("compiler error: could not write token to a file: {s}\n", .{@errorName(err)});
+        @panic("compiler error: could not write token to a file!");
+    };
 }

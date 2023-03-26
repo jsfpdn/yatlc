@@ -2,10 +2,9 @@ const std = @import("std");
 
 const io = std.io;
 
-const token = @import("token.zig");
-const scanner = @import("scanner.zig");
+const scanner = @import("../scanner/scanner.zig");
 
-const Token = token.Token;
+const Token = scanner.Token;
 
 pub const Reporter = struct {
     contents: []const u8,
