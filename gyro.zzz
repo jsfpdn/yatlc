@@ -11,9 +11,3 @@ pkgs:
     files:
       README.md
       LICENSE
-deps:
-  clap:
-    git:
-      url: "https://github.com/Hejsil/zig-clap.git"
-      ref: dbc6b8e54ad753b0605feaeecc8e79dba3572ed3
-      root: clap.zig

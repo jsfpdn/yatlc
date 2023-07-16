@@ -1,9 +1,10 @@
 const std = @import("std");
-const clap = @import("clap");
 const builtin = @import("builtin");
 
 const fs = std.fs;
 const io = std.io;
+const mem = std.mem;
+const process = std.process;
 
 // TODO(jsfpdn): Simplify imports (single main.zig file exporting all the necessary symbols in all sub-libraries)
 
@@ -14,55 +15,53 @@ const parser = @import("parser/parser.zig");
 const MAX_BYTES: usize = 1024 * 1024;
 
 const description = "yatlc is a yet-another-toy-language compiler.";
-const params = clap.parseParamsComptime(
-    \\-h, --help            Show this help message
-    \\-v, --verbose         Print debug information
-    \\-t, --emittokens     Emit tokens from lexical analysis to a .t file
-    \\<str>                 Path to a source file to be compiled
+const usage =
+    \\Usage: yatlc [file] [option ...]
     \\
-);
+    \\General options:
+    \\-h, --help            Show this help message
+    \\-v, --verbose         Print debug information during compilation
+    \\-t, --emittokens      Emit tokens from lexical analysis to a .t file
+    \\
+;
 
-fn showHelp(writer: anytype) !void {
-    _ = try writer.write(description ++ std.cstr.line_sep ++ "yatlc:" ++ std.cstr.line_sep);
-    try clap.help(writer, clap.Help, &params, .{});
-    _ = try writer.write(std.cstr.line_sep);
-}
+pub const options = struct {
+    verbose: bool = false,
+    emitTokens: bool = false,
 
-fn showUsage(writer: anytype) !void {
-    try clap.usage(writer, clap.Help, &params);
-    _ = try writer.write(std.cstr.line_sep);
-}
+    // TODO(jsfpdn): custom pub fmt function to print options when verbose?
+};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    var diag = clap.Diagnostic{};
-    const errWriter = io.getStdErr().writer();
-
-    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{ .diagnostic = &diag }) catch |err| {
-        diag.report(errWriter, err) catch {};
-        try showUsage(errWriter);
-        return;
+    const args = process.argsAlloc(allocator) catch |err| {
+        fatal("could not read command-line arguments: {s}", .{@errorName(err)});
     };
-    defer res.deinit();
+    defer process.argsFree(allocator, args);
 
-    if (res.args.help) {
-        try showHelp(errWriter);
-        return;
+    if (args.len < 2) {
+        fatal("received too few arguments", .{});
     }
 
-    if (res.positionals.len != 1) {
-        std.log.err("Path to exactly one source file must be supplied!\n", .{});
-        try showUsage(errWriter);
-        return;
+    var opts = options{};
+    for (args[2..]) |arg| {
+        if (argSet(arg, "-h", "--help")) {
+            return io.getStdOut().writeAll(usage);
+        } else if (argSet(arg, "-v", "--verbose")) {
+            opts.verbose = true;
+        } else if (argSet(arg, "-t", "--emittokens")) {
+            opts.emitTokens = true;
+        } else {
+            fatal("unrecognized option {s}", .{arg});
+        }
     }
 
-    const filePath = res.positionals[0];
-    const file: fs.File = fs.cwd().openFile(filePath, .{}) catch |err| {
-        std.log.err("could not open file {s}: {s}", .{ filePath, @errorName(err) });
-        return;
+    const filename = args[1];
+    const file: fs.File = fs.cwd().openFile(filename, .{}) catch |err| {
+        fatal("could not open file {s}: {s}", .{ filename, @errorName(err) });
     };
     defer file.close();
 
@@ -71,14 +70,28 @@ pub fn main() !void {
     defer allocator.free(contents);
 
     var w: ?std.fs.File.Writer = null;
-    if (res.args.emittokens) {
-        const f = try std.fs.cwd().createFile("out.t", .{ .read = false, .truncate = true });
+    if (opts.emitTokens) {
+        const tFile = std.fmt.allocPrint(allocator, "{s}.t", .{filename}) catch |err| {
+            fatal("could not prepare a .t file: {s}", .{@errorName(err)});
+        };
+        const f = std.fs.cwd().createFile(tFile, .{ .read = false, .truncate = true }) catch |err| {
+            fatal("could not create a .t file: {s}", .{@errorName(err)});
+        };
         w = f.writer();
     }
 
-    var r = reporter.Reporter.init(contents, filePath, io.getStdErr().writer());
+    var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, r, w);
     var p = parser.Parser.init(s, r);
 
     p.parse();
+}
+
+pub fn fatal(comptime format: []const u8, args: anytype) noreturn {
+    std.log.err(format, args);
+    process.exit(1);
+}
+
+pub fn argSet(arg: []const u8, short: []const u8, long: []const u8) bool {
+    return mem.eql(u8, arg, short) or mem.eql(u8, arg, long);
 }
