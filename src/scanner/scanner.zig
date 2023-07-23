@@ -47,6 +47,32 @@ pub const Scanner = struct {
     /// If tokenWriter was supplied during the initialization, the analyzed token
     /// is formatted and written to it.
     pub fn next(self: *Scanner) token.Token {
+        return self._next(false);
+    }
+
+    /// Peek reads the source code and returns the next lexem without advancing
+    /// and modifying the state of the tokenizer.
+    ///
+    /// If error is occured, it is not reported.
+    /// The lexem is not emitted with the tokenWriter.
+    pub fn peek(self: *Scanner) token.Token {
+        const oldOffset = self.offset;
+        const oldCharOffset = self.charOffset;
+        const oldLineOffest = self.lineOffset;
+
+        const tok = self._next(true);
+
+        self.offset = oldOffset;
+        self.charOffset = oldCharOffset;
+        self.lineOffset = oldLineOffest;
+
+        return tok;
+    }
+
+    /// _next reads the source code and returns the next lexem.
+    /// If peekSymbol is true, the next lexem is peeked & returned without
+    /// modifying the state of the tokenizer.
+    fn _next(self: *Scanner, peekSymbol: bool) token.Token {
         self.eatWhitespace();
 
         var tok = Token{
@@ -56,7 +82,9 @@ pub const Scanner = struct {
             .symbol = "",
         };
 
-        defer self.emitToken(tok);
+        if (!peekSymbol) {
+            defer self.emitToken(tok);
+        }
 
         if (self.eof()) {
             tok.tokenType = TokenType.EOF;
@@ -75,27 +103,29 @@ pub const Scanner = struct {
             '}' => tok.tokenType = TokenType.RBRACE,
             ';' => tok.tokenType = TokenType.SEMICOLON,
             ':' => tok.tokenType = TokenType.COLON,
+            '@' => tok.tokenType = TokenType.AT,
+            '^' => tok.tokenType = TokenType.XOR,
             '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
             '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
-            '<' => self.switch2(&tok, '=', TokenType.LEQ, TokenType.LSS),
-            '>' => self.switch2(&tok, '=', TokenType.GEQ, TokenType.GTR),
             '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
+            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.LSH, TokenType.LSS),
+            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.RSH, TokenType.GTR),
             '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
             '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
             '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
             '"' => self.parseStringLiteral(&tok),
-            '@' => self.parseBuiltin(&tok),
-            'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
+            '\'' => self.parseCharLiteral(&tok),
+            'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeywordOrType(&tok),
             '0'...'9' => self.parseNumber(&tok, c),
             '.' => {
                 // Either a single period or a floating point number with just a decimal part.
                 tok.tokenType = TokenType.PERIOD;
 
-                if (self.peek()) |p| {
+                if (self.peekChar()) |p| {
                     if (isNumeric(p)) {
-                        tok.tokenType = TokenType.FLOAT;
+                        tok.tokenType = TokenType.C_FLOAT;
                         self.advance();
                         self.parseInteger(&tok, 10);
                     }
@@ -103,18 +133,20 @@ pub const Scanner = struct {
             },
             '/' => {
                 // Special care must be taken if / or * follows due to the analysis of comments.
-                const p = self.peek() catch return tok;
+                const p = self.peekChar() catch return tok;
                 switch (p) {
                     '/' => self.parseSinglelineComment(&tok),
                     '*' => self.parseMultilineComment(&tok),
                     else => self.switch2(&tok, '=', TokenType.QUO_ASSIGN, TokenType.QUO),
                 }
             },
-            else => self.errorMessage = "Unrecognized token",
+            else => {
+                if (!peekSymbol) self.errorMessage = "Unrecognized token";
+            },
         }
 
         tok.symbol = self.symbol(tok);
-        if (tok.tokenType == TokenType.ILLEGAL) {
+        if (!peekSymbol and tok.tokenType == TokenType.ILLEGAL) {
             if (self.reporter) |r| {
                 r.report(tok, self.errorMessage);
                 self.errorMessage = "";
@@ -129,11 +161,15 @@ pub const Scanner = struct {
         return self.offset >= self.contents.len;
     }
 
-    fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
+    fn parseIdentOrKeywordOrType(self: *Scanner, tok: *Token) void {
         tok.tokenType = TokenType.IDENT;
         self.parseIdent(tok);
         if (token.TokenType.getKeyword(self.symbol(tok.*))) |keyword| {
             tok.tokenType = keyword;
+        } else if (token.TokenType.getType(self.symbol(tok.*))) |t| {
+            tok.tokenType = t;
+        } else if (token.TokenType.getBuiltin(self.symbol(tok.*))) |builtin| {
+            tok.tokenType = builtin;
         } else {
             var otherThanUnderscore = false;
             for (self.symbol(tok.*)) |char| {
@@ -156,7 +192,7 @@ pub const Scanner = struct {
                 tok.bufferLoc.end = self.offset - 1;
                 return;
             }
-            const p = self.peek() catch unreachable;
+            const p = self.peekChar() catch unreachable;
             if (!isAlphanumeric(p) and p != '_') {
                 tok.bufferLoc.end = self.offset - 1;
                 return;
@@ -166,12 +202,12 @@ pub const Scanner = struct {
     }
 
     fn parseNumber(self: *Scanner, tok: *Token, leading: u8) void {
-        tok.tokenType = TokenType.INT;
+        tok.tokenType = TokenType.C_INT;
 
         var base = @as(usize, 10);
         if (leading == '0') {
             // Check for '0x', '0o' and '0b' prefixes.
-            const pn = self.peek() catch unreachable;
+            const pn = self.peekChar() catch unreachable;
             switch (pn) {
                 'x' => base = 16,
                 'o' => base = 8,
@@ -187,17 +223,17 @@ pub const Scanner = struct {
 
         self.parseInteger(tok, base);
 
-        const p = self.peek() catch return;
+        const p = self.peekChar() catch return;
         if (p != '.') {
             return;
         }
-        tok.tokenType = TokenType.FLOAT;
+        tok.tokenType = TokenType.C_FLOAT;
         self.advance();
         self.parseInteger(tok, base);
     }
 
     fn parseInteger(self: *Scanner, tok: *Token, base: usize) void {
-        _ = self.peek() catch |err| switch (err) {
+        _ = self.peekChar() catch |err| switch (err) {
             error.EOF => {
                 self.errorMessage = "number literal must not be empty";
                 return;
@@ -215,7 +251,7 @@ pub const Scanner = struct {
 
     fn parseDecimal(self: *Scanner, tok: *Token) void {
         while (!self.eof()) {
-            const d = self.peek() catch break;
+            const d = self.peekChar() catch break;
             switch (d) {
                 '0'...'9' => self.advance(),
                 else => break,
@@ -227,7 +263,7 @@ pub const Scanner = struct {
 
     fn parseHexadecimal(self: *Scanner, tok: *Token) void {
         while (!self.eof()) {
-            const d = self.peek() catch break;
+            const d = self.peekChar() catch break;
             switch (d) {
                 '0'...'9', 'a'...'f', 'A'...'F' => self.advance(),
                 else => break,
@@ -239,7 +275,7 @@ pub const Scanner = struct {
 
     fn parseOctal(self: *Scanner, tok: *Token) void {
         while (!self.eof()) {
-            const d = self.peek() catch break;
+            const d = self.peekChar() catch break;
             switch (d) {
                 '0'...'7' => self.advance(),
                 else => break,
@@ -250,7 +286,7 @@ pub const Scanner = struct {
 
     fn parseBinary(self: *Scanner, tok: *Token) void {
         while (!self.eof()) {
-            const d = self.peek() catch break;
+            const d = self.peekChar() catch break;
             switch (d) {
                 '0', '1' => self.advance(),
                 else => break,
@@ -260,19 +296,8 @@ pub const Scanner = struct {
         tok.bufferLoc.end = self.offset - 1;
     }
 
-    fn parseBuiltin(self: *Scanner, tok: *Token) void {
-        self.parseIdent(tok);
-        const s = self.contents[tok.bufferLoc.start .. tok.bufferLoc.end + 1];
-        if (token.TokenType.getBuiltin(s)) |builtin| {
-            tok.tokenType = builtin;
-            return;
-        }
-        tok.tokenType = TokenType.ILLEGAL;
-        self.errorMessage = "Builtin function does not exist";
-    }
-
     fn parseStringLiteral(self: *Scanner, tok: *Token) void {
-        tok.tokenType = TokenType.STRING;
+        tok.tokenType = TokenType.C_STRING;
         var escaped = false;
 
         while (true) {
@@ -283,7 +308,7 @@ pub const Scanner = struct {
                 return;
             }
 
-            const p = self.peek() catch unreachable;
+            const p = self.peekChar() catch unreachable;
 
             self.advance();
             if (p == '"' and !escaped) {
@@ -295,14 +320,32 @@ pub const Scanner = struct {
         }
     }
 
+    fn parseCharLiteral(self: *Scanner, tok: *Token) void {
+        tok.tokenType = TokenType.C_CHAR;
+        var p = self.peekChar() catch unreachable;
+
+        if (p == '\\') {
+            self.advance();
+        }
+
+        self.advance();
+        p = self.peekChar() catch unreachable;
+        if (p != '\'') {
+            tok.tokenType = TokenType.ILLEGAL;
+        }
+
+        self.advance();
+        tok.bufferLoc.end = self.offset - 1;
+    }
+
     fn parseSinglelineComment(self: *Scanner, tok: *Token) void {
-        var p = self.peek() catch unreachable;
+        var p = self.peekChar() catch unreachable;
         if (p != '/') unreachable;
         // Conusme the '/'.
         self.advance();
 
         while (!self.eof()) {
-            p = self.peek() catch unreachable;
+            p = self.peekChar() catch unreachable;
 
             if (p == '\n') {
                 break;
@@ -346,8 +389,8 @@ pub const Scanner = struct {
     }
 
     fn followsCommentOpening(self: *Scanner) bool {
-        const p = self.peek() catch return false;
-        const pn = self.peekNext() catch return false;
+        const p = self.peekChar() catch return false;
+        const pn = self.peekNextChar() catch return false;
 
         if ((p == '/') and (pn == '*')) {
             self.advance();
@@ -358,8 +401,8 @@ pub const Scanner = struct {
     }
 
     fn followsCommentClosing(self: *Scanner) bool {
-        const p = self.peek() catch return false;
-        const pn = self.peekNext() catch return false;
+        const p = self.peekChar() catch return false;
+        const pn = self.peekNextChar() catch return false;
 
         if (p == '*' and pn == '/') {
             self.advance();
@@ -374,7 +417,7 @@ pub const Scanner = struct {
             return;
         }
 
-        const p = self.peek() catch unreachable;
+        const p = self.peekChar() catch unreachable;
         self.offset += 1;
         self.charOffset += 1;
         if (p == '\n') {
@@ -386,7 +429,7 @@ pub const Scanner = struct {
     fn switch2(self: *Scanner, tok: *Token, shouldFollow: u8, ifFollows: TokenType, elseFollows: TokenType) void {
         tok.tokenType = elseFollows;
 
-        if (self.peek()) |follows| {
+        if (self.peekChar()) |follows| {
             if (follows == shouldFollow) {
                 tok.tokenType = ifFollows;
                 tok.bufferLoc.end = self.offset;
@@ -401,7 +444,7 @@ pub const Scanner = struct {
     fn switch3(self: *Scanner, tok: *Token, ifA: u8, thenA: TokenType, elifB: u8, thenB: TokenType, elseFollows: TokenType) void {
         tok.tokenType = elseFollows;
 
-        if (self.peek()) |follows| {
+        if (self.peekChar()) |follows| {
             if (follows == ifA) {
                 tok.tokenType = thenA;
             } else if (follows == elifB) {
@@ -419,7 +462,7 @@ pub const Scanner = struct {
 
     fn eatWhitespace(self: *Scanner) void {
         while (true and !self.eof()) {
-            const c = self.peek() catch unreachable;
+            const c = self.peekChar() catch unreachable;
             switch (c) {
                 ' ', '\t', '\n', '\r' => self.advance(),
                 else => return,
@@ -427,13 +470,13 @@ pub const Scanner = struct {
         }
     }
 
-    fn peek(self: *Scanner) !u8 {
+    fn peekChar(self: *Scanner) !u8 {
         if (self.offset >= self.contents.len) return error.EOF;
 
         return self.contents[self.offset];
     }
 
-    fn peekNext(self: *Scanner) !u8 {
+    fn peekNextChar(self: *Scanner) !u8 {
         if (self.offset + 1 >= self.contents.len) return error.EOF;
 
         return self.contents[self.offset + 1];

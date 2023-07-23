@@ -22,18 +22,21 @@ pub const Token = struct {
     }
 };
 
-pub const TokenType = enum {
+pub const TokenType = enum(u8) {
     // Special tokens
     ILLEGAL,
     EOF,
     COMMENT,
 
-    // Identifiers and basic type literals
+    // Identifiers
     IDENT, // variable_name
-    INT, // 42
-    FLOAT, // 42.24
-    CHAR, // 'a'
-    STRING, // "string"
+
+    // Constants
+    C_INT, // 420
+    C_FLOAT, // 3.14
+    C_CHAR, // 'a'
+    C_STRING, // "asd"
+    C_BOOL, // true or false
 
     // Arithmetical operators
     ADD, // +
@@ -45,6 +48,9 @@ pub const TokenType = enum {
     // Bitwise operators
     AND, // &
     OR, // |
+    XOR, // ^
+    LSH, // <<
+    RSH, // >>
 
     // Asignment operator
     ASSIGN, // =
@@ -59,6 +65,7 @@ pub const TokenType = enum {
     // Bitwise assignment operators
     AND_ASSIGN, // &=
     OR_ASSIGN, // |=
+    XOR_ASSIGN, // ^
 
     // Logical operators
     LAND, // &&
@@ -86,6 +93,7 @@ pub const TokenType = enum {
     RBRACE, // }
     SEMICOLON, // ;
     COLON, // :
+    QST, // ?
 
     // keywords
     BREAK,
@@ -94,15 +102,26 @@ pub const TokenType = enum {
     IF,
     RETURN,
     WHILE,
+    FOR,
 
-    // builtin functions
-    BF_LEN, // @len
-    BF_TOBOOL, // @toBool
-    BF_TOINT, // @toInt
-    BF_TOFLOAT, // @toFloat
-    BF_PRINT, // @print
-    BF_READ, // @read
-    // TODO: add builtin functions for printing and user input.
+    // special "@" symbol for type conversions and built-in functions
+    AT, // @
+
+    // names of built-in functions that must be preceeded with "@"
+    LEN, // len
+    PRINT, // print
+    READ, // read
+
+    // types
+    T_I32, // i32
+    T_I16, // i16
+    T_U32, // u32
+    T_U16, // u16
+    T_CHAR, // char
+    T_STRING, // str
+    T_BOOL, // bool
+    T_VOID, // void
+    T_FLOAT, // float
 
     const keywords = std.ComptimeStringMap(TokenType, .{
         .{ "break", .BREAK },
@@ -113,25 +132,49 @@ pub const TokenType = enum {
         .{ "while", .WHILE },
     });
 
+    const builtins = std.ComptimeStringMap(TokenType, .{
+        .{ "len", .LEN },
+        .{ "print", .PRINT },
+        .{ "read", .READ },
+    });
+
+    const types = std.ComptimeStringMap(TokenType, .{
+        .{ "i32", .T_I32 },
+        .{ "i16", .T_I16 },
+        .{ "u32", .T_U32 },
+        .{ "u16", .T_U16 },
+        .{ "char", .T_CHAR },
+        .{ "str", .T_STRING },
+        .{ "bool", .T_BOOL },
+        .{ "void", .T_VOID },
+        .{ "float", .T_FLOAT },
+    });
+
     pub fn getKeyword(bytes: []const u8) ?TokenType {
         return keywords.get(bytes);
     }
-
-    const builtins = std.ComptimeStringMap(TokenType, .{
-        .{ "@len", .BF_LEN },
-        .{ "@toBool", .BF_TOBOOL },
-        .{ "@toInt", .BF_TOINT },
-        .{ "@toFloat", .BF_TOFLOAT },
-        .{ "@print", .BF_PRINT },
-        .{ "@read", .BF_READ },
-    });
 
     pub fn getBuiltin(bytes: []const u8) ?TokenType {
         return builtins.get(bytes);
     }
 
+    pub fn getType(bytes: []const u8) ?TokenType {
+        return types.get(bytes);
+    }
+
+    pub fn isBuiltin(token: TokenType) bool {
+        return @enumToInt(token) >= @enumToInt(TokenType.LEN) and @enumToInt(token) <= @enumToInt(TokenType.READ);
+    }
+
+    pub fn isType(token: TokenType) bool {
+        return @enumToInt(token) >= @enumToInt(TokenType.T_I32) and @enumToInt(token) <= @enumToInt(TokenType.T_FLOAT);
+    }
+
+    pub fn isAssignment(token: TokenType) bool {
+        return @enumToInt(token) >= @enumToInt(TokenType.ASSIGN) and @enumToInt(token) <= @enumToInt(TokenType.XOR_ASSIGN);
+    }
+
     pub const TokenNameTable = [@typeInfo(TokenType).Enum.fields.len][:0]const u8{
-        //
         "ILLEGAL",
         "EOF",
         "COMMENT",
@@ -141,6 +184,7 @@ pub const TokenType = enum {
         "FLOAT",
         "CHAR",
         "STRING",
+        "BOOL",
 
         "+",
         "-",
@@ -150,6 +194,9 @@ pub const TokenType = enum {
 
         "&",
         "|",
+        "^",
+        "<<",
+        ">>",
 
         "=",
 
@@ -161,6 +208,7 @@ pub const TokenType = enum {
 
         "&=",
         "|=",
+        "^=",
 
         "&&",
         "||",
@@ -186,6 +234,7 @@ pub const TokenType = enum {
         "}",
         ";",
         ":",
+        "?",
 
         "break",
         "continue",
@@ -193,13 +242,23 @@ pub const TokenType = enum {
         "if",
         "return",
         "while",
+        "for",
 
-        "@len",
-        "@toBool",
-        "@toInt",
-        "@toFloat",
-        "@print",
-        "@read",
+        "@",
+
+        "len",
+        "print",
+        "read",
+
+        "i32",
+        "i16",
+        "u32",
+        "u16",
+        "char",
+        "string",
+        "bool",
+        "void",
+        "float",
     };
 
     pub fn str(self: TokenType) [:0]const u8 {
@@ -217,5 +276,16 @@ test "enum to string representation mapping" {
     try expect(std.mem.eql(u8, TokenType.BREAK.str(), "break"));
     try expect(std.mem.eql(u8, TokenType.EQL.str(), "=="));
     try expect(std.mem.eql(u8, TokenType.LPAREN.str(), "("));
-    try expect(std.mem.eql(u8, TokenType.BF_LEN.str(), "@len"));
+    try expect(std.mem.eql(u8, TokenType.LEN.str(), "len"));
+}
+
+test "types are correctly classified" {
+    try expect(TokenType.isType(TokenType.T_I32));
+    try expect(TokenType.isType(TokenType.T_I16));
+    try expect(TokenType.isType(TokenType.T_U32));
+    try expect(TokenType.isType(TokenType.T_U32));
+    try expect(TokenType.isType(TokenType.T_STRING));
+    try expect(TokenType.isType(TokenType.T_CHAR));
+    try expect(TokenType.isType(TokenType.T_FLOAT));
+    try expect(TokenType.isType(TokenType.T_BOOL));
 }
