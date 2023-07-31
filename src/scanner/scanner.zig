@@ -117,7 +117,7 @@ pub const Scanner = struct {
             '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
             '"' => self.parseStringLiteral(&tok),
             '\'' => self.parseCharLiteral(&tok),
-            'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeywordOrType(&tok),
+            'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
             '0'...'9' => self.parseNumber(&tok, c),
             '.' => {
                 // Either a single period or a floating point number with just a decimal part.
@@ -161,13 +161,11 @@ pub const Scanner = struct {
         return self.offset >= self.contents.len;
     }
 
-    fn parseIdentOrKeywordOrType(self: *Scanner, tok: *Token) void {
+    fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
         tok.tokenType = TokenType.IDENT;
         self.parseIdent(tok);
         if (token.TokenType.getKeyword(self.symbol(tok.*))) |keyword| {
             tok.tokenType = keyword;
-        } else if (token.TokenType.getType(self.symbol(tok.*))) |t| {
-            tok.tokenType = t;
         } else if (token.TokenType.getBuiltin(self.symbol(tok.*))) |builtin| {
             tok.tokenType = builtin;
         } else {

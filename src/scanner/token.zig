@@ -20,6 +20,10 @@ pub const Token = struct {
     pub fn len(self: Token) usize {
         return self.bufferLoc.end - self.bufferLoc.start;
     }
+
+    pub fn str(self: Token) []const u8 {
+        return self.symbol;
+    }
 };
 
 pub const TokenType = enum(u8) {
@@ -112,17 +116,6 @@ pub const TokenType = enum(u8) {
     PRINT, // print
     READ, // read
 
-    // types
-    T_I32, // i32
-    T_I16, // i16
-    T_U32, // u32
-    T_U16, // u16
-    T_CHAR, // char
-    T_STRING, // str
-    T_BOOL, // bool
-    T_VOID, // void
-    T_FLOAT, // float
-
     const keywords = std.ComptimeStringMap(TokenType, .{
         .{ "break", .BREAK },
         .{ "continue", .CONTINUE },
@@ -138,18 +131,6 @@ pub const TokenType = enum(u8) {
         .{ "read", .READ },
     });
 
-    const types = std.ComptimeStringMap(TokenType, .{
-        .{ "i32", .T_I32 },
-        .{ "i16", .T_I16 },
-        .{ "u32", .T_U32 },
-        .{ "u16", .T_U16 },
-        .{ "char", .T_CHAR },
-        .{ "str", .T_STRING },
-        .{ "bool", .T_BOOL },
-        .{ "void", .T_VOID },
-        .{ "float", .T_FLOAT },
-    });
-
     pub fn getKeyword(bytes: []const u8) ?TokenType {
         return keywords.get(bytes);
     }
@@ -158,16 +139,8 @@ pub const TokenType = enum(u8) {
         return builtins.get(bytes);
     }
 
-    pub fn getType(bytes: []const u8) ?TokenType {
-        return types.get(bytes);
-    }
-
     pub fn isBuiltin(token: TokenType) bool {
         return @enumToInt(token) >= @enumToInt(TokenType.LEN) and @enumToInt(token) <= @enumToInt(TokenType.READ);
-    }
-
-    pub fn isType(token: TokenType) bool {
-        return @enumToInt(token) >= @enumToInt(TokenType.T_I32) and @enumToInt(token) <= @enumToInt(TokenType.T_FLOAT);
     }
 
     pub fn isAssignment(token: TokenType) bool {
@@ -249,16 +222,6 @@ pub const TokenType = enum(u8) {
         "len",
         "print",
         "read",
-
-        "i32",
-        "i16",
-        "u32",
-        "u16",
-        "char",
-        "string",
-        "bool",
-        "void",
-        "float",
     };
 
     pub fn str(self: TokenType) [:0]const u8 {
@@ -277,15 +240,4 @@ test "enum to string representation mapping" {
     try expect(std.mem.eql(u8, TokenType.EQL.str(), "=="));
     try expect(std.mem.eql(u8, TokenType.LPAREN.str(), "("));
     try expect(std.mem.eql(u8, TokenType.LEN.str(), "len"));
-}
-
-test "types are correctly classified" {
-    try expect(TokenType.isType(TokenType.T_I32));
-    try expect(TokenType.isType(TokenType.T_I16));
-    try expect(TokenType.isType(TokenType.T_U32));
-    try expect(TokenType.isType(TokenType.T_U32));
-    try expect(TokenType.isType(TokenType.T_STRING));
-    try expect(TokenType.isType(TokenType.T_CHAR));
-    try expect(TokenType.isType(TokenType.T_FLOAT));
-    try expect(TokenType.isType(TokenType.T_BOOL));
 }
