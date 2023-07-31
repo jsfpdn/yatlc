@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const scanner_test = @import("scanner/scanner_test.zig");
-const parser_test = @import("parser/parser_test.zig");
+const scanner_test = @import("scanner_test.zig");
+const parser_test = @import("parser_test.zig");
 
 test {
     // Driver code to run all tests in descendant sub-packages.

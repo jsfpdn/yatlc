@@ -7,7 +7,7 @@ const token = @import("token.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 
-const reporter = @import("../reporter/reporter.zig");
+const reporter = @import("reporter.zig");
 const Reporter = reporter.Reporter;
 
 test {

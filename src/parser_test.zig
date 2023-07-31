@@ -1,8 +1,8 @@
 const std = @import("std");
 
 const parser = @import("parser.zig");
-const scanner = @import("../scanner/scanner.zig");
-const token = @import("../scanner/token.zig");
+const scanner = @import("scanner.zig");
+const token = @import("token.zig");
 
 test {
     // Driver code to run all tests in this package.

@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const token = @import("token.zig");
-const reporter = @import("../reporter/reporter.zig");
+const reporter = @import("reporter.zig");
 
 pub const Token = token.Token;
 pub const TokenType = token.TokenType;

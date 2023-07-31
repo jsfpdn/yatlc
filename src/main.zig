@@ -6,11 +6,9 @@ const io = std.io;
 const mem = std.mem;
 const process = std.process;
 
-// TODO(jsfpdn): Simplify imports (single main.zig file exporting all the necessary symbols in all sub-libraries)
-
-const scanner = @import("scanner/scanner.zig");
-const reporter = @import("reporter/reporter.zig");
-const parser = @import("parser/parser.zig");
+const scanner = @import("scanner.zig");
+const reporter = @import("reporter.zig");
+const parser = @import("parser.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 

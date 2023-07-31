@@ -1,9 +1,9 @@
 const std = @import("std");
 
 const types = @import("types.zig");
-const scanner = @import("../scanner/scanner.zig");
-const token = @import("../scanner/token.zig");
-const reporter = @import("../reporter/reporter.zig");
+const scanner = @import("scanner.zig");
+const token = @import("token.zig");
+const reporter = @import("reporter.zig");
 
 pub const Arg = struct {
     ident: token.Token,

@@ -2,7 +2,7 @@ const std = @import("std");
 
 const io = std.io;
 
-const scanner = @import("../scanner/scanner.zig");
+const scanner = @import("scanner.zig");
 
 const Token = scanner.Token;
 
