@@ -79,8 +79,8 @@ pub const TokenType = enum(u8) {
 
     // Relational operators
     EQL, // ==
-    LSS, // <
-    GTR, // >
+    LT, // <
+    GT, // >
     NOT, // !
     NEQ, // !=
     LEQ, // <=
@@ -97,7 +97,7 @@ pub const TokenType = enum(u8) {
     RBRACE, // }
     SEMICOLON, // ;
     COLON, // :
-    QST, // ?
+    QUESTION_MARK, // ?
 
     // keywords
     BREAK,

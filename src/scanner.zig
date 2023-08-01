@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const token = @import("token.zig");
-const reporter = @import("reporter.zig");
 
 pub const Token = token.Token;
 pub const TokenType = token.TokenType;
@@ -14,8 +13,6 @@ pub const Scanner = struct {
     charOffset: usize, // Together with Scanner.lineOffset, describes the current location of scanner
     lineOffset: usize, // Together with Scanner.charOffset, describes the current location of scanner
 
-    // reporter is used for reporting error messages.
-    reporter: ?reporter.Reporter,
     // errorMessage describes currently encountered error.
     errorMessage: []const u8,
 
@@ -25,10 +22,9 @@ pub const Scanner = struct {
     lastToken: ?Token,
 
     /// Init prepares the scanner for lexical analysis.
-    pub fn init(contents: []const u8, r: ?reporter.Reporter, tokenWriter: ?std.fs.File.Writer) Scanner {
+    pub fn init(contents: []const u8, tokenWriter: ?std.fs.File.Writer) Scanner {
         return .{
             .contents = contents,
-            .reporter = r,
 
             .offset = 0,
             .charOffset = 1,
@@ -42,8 +38,6 @@ pub const Scanner = struct {
 
     /// Next reads the source code and returns the next lexem.
     ///
-    /// If any error was encountered, it is reported to the reporter.
-    ///
     /// If tokenWriter was supplied during the initialization, the analyzed token
     /// is formatted and written to it.
     pub fn next(self: *Scanner) token.Token {
@@ -52,9 +46,6 @@ pub const Scanner = struct {
 
     /// Peek reads the source code and returns the next lexem without advancing
     /// and modifying the state of the tokenizer.
-    ///
-    /// If error is occured, it is not reported.
-    /// The lexem is not emitted with the tokenWriter.
     pub fn peek(self: *Scanner) token.Token {
         const oldOffset = self.offset;
         const oldCharOffset = self.charOffset;
@@ -109,8 +100,8 @@ pub const Scanner = struct {
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
             '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
             '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
-            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.LSH, TokenType.LSS),
-            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.RSH, TokenType.GTR),
+            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.LSH, TokenType.LT),
+            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.RSH, TokenType.GT),
             '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
             '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
@@ -146,13 +137,6 @@ pub const Scanner = struct {
         }
 
         tok.symbol = self.symbol(tok);
-        if (!peekSymbol and tok.tokenType == TokenType.ILLEGAL) {
-            if (self.reporter) |r| {
-                r.report(tok, self.errorMessage);
-                self.errorMessage = "";
-            }
-        }
-
         return tok;
     }
 

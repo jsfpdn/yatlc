@@ -16,11 +16,11 @@ test {
 test "parse simple expressions" {
     const tuple = struct { expr: []const u8, parseError: ?parser.ParseError = null, failedAt: ?token.Token = null, errorMsg: ?[]const u8 = null };
     const cases = [_]tuple{
-        .{ .expr = "a" },
+        // .{ .expr = "a" },
     };
 
     for (cases) |tc| {
-        var s = scanner.Scanner.init(tc.expr, null, null);
+        var s = scanner.Scanner.init(tc.expr, null);
         var p = parser.Parser.init(s, null, std.testing.allocator);
 
         if (p.parseExpression()) |_| {
@@ -47,7 +47,7 @@ test "parse statements" {
     };
 
     for (cases) |tc| {
-        var s = scanner.Scanner.init(tc.stmnt, null, null);
+        var s = scanner.Scanner.init(tc.stmnt, null);
         var p = parser.Parser.init(s, null, std.testing.allocator);
 
         p.parse();

@@ -79,7 +79,7 @@ pub fn main() !void {
     }
 
     var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
-    var s = scanner.Scanner.init(contents, r, w);
+    var s = scanner.Scanner.init(contents, w);
     var p = parser.Parser.init(s, r, allocator);
 
     p.parse();

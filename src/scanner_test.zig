@@ -7,9 +7,6 @@ const token = @import("token.zig");
 const Token = token.Token;
 const TokenType = token.TokenType;
 
-const reporter = @import("reporter.zig");
-const Reporter = reporter.Reporter;
-
 test {
     // Driver code to run all tests in this package.
     std.testing.refAllDeclsRecursive(token);
@@ -29,7 +26,7 @@ fn expectTokensEqual(want: Token, got: Token) !void {
 
 test "eat EOF" {
     const contents = "";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const tok = s.next();
     try expectTokensEqual(Token{ .tokenType = TokenType.EOF, .bufferLoc = Token.BufferLoc{ .start = 0, .end = 0 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 1 }, .symbol = "EOF" }, tok);
@@ -37,7 +34,7 @@ test "eat EOF" {
 
 test "OP and OP_ASSIGN tokens with locations" {
     const contents = " += +   -= -";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const cases = [_]Token{
         Token{ .tokenType = TokenType.ADD_ASSIGN, .bufferLoc = Token.BufferLoc{ .start = 1, .end = 2 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 2 }, .symbol = "+=" },
@@ -79,17 +76,17 @@ test "scan identifiers, keywords, and builtin" {
         .{ .symbol = "len", .tokenType = TokenType.LEN },
         .{ .symbol = "print", .tokenType = TokenType.PRINT },
         .{ .symbol = "read", .tokenType = TokenType.READ },
-        .{ .symbol = "<", .tokenType = TokenType.LSS },
+        .{ .symbol = "<", .tokenType = TokenType.LT },
         .{ .symbol = "<<", .tokenType = TokenType.LSH },
         .{ .symbol = "<=", .tokenType = TokenType.LEQ },
-        .{ .symbol = ">", .tokenType = TokenType.GTR },
+        .{ .symbol = ">", .tokenType = TokenType.GT },
         .{ .symbol = ">>", .tokenType = TokenType.RSH },
         .{ .symbol = ">=", .tokenType = TokenType.GEQ },
         .{ .symbol = "EOF", .tokenType = TokenType.EOF },
     };
 
     const contents = "break continue \n\t else if return while identifier Identifier Identifier2 __Ident_ifier_ bool \t\n i32 \t i16 \n\t u32 u16 char str void float len print read < << <= > >> >=\n\t";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     var tok: token.Token = undefined;
     for (cases) |tc| {
@@ -101,7 +98,7 @@ test "scan identifiers, keywords, and builtin" {
 
 test "scan invalid tokens" {
     const contents = "  _ \t\n ____ \n";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const cases = [_]tuple{
         .{ .symbol = "_", .tokenType = TokenType.ILLEGAL },
@@ -118,7 +115,7 @@ test "scan invalid tokens" {
 
 test "scan number literals" {
     const contents = "123 0 0123 .23 123.45 0b1001 0x14AaF 0o1237";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const cases = [_]tuple{
         .{ .symbol = "123", .tokenType = TokenType.C_INT },
@@ -147,7 +144,7 @@ test "scan string literals" {
         \\ 'a'
     ;
 
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const cases = [_]tuple{
         .{ .symbol = "\"this is a string literal!\"", .tokenType = TokenType.C_STRING },
@@ -167,7 +164,7 @@ test "scan string literals" {
 test "scan character literals" {
     const contents = " 'a'  '\\a'";
 
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
     const cases = [_]tuple{
         .{ .symbol = "'a'", .tokenType = TokenType.C_CHAR },
         .{ .symbol = "'\\a'", .tokenType = TokenType.C_CHAR },
@@ -183,7 +180,7 @@ test "scan character literals" {
 
 test "scan unclosed string literals" {
     const contents = "\"look at me, I'm unclosed!";
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     var tok = s.next();
     try std.testing.expectEqual(TokenType.ILLEGAL, tok.tokenType);
@@ -200,7 +197,7 @@ test "scan comments" {
         \\      /* nested multiline comment! */
         \\  this is also a comment */
     ;
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     const nestedComment =
         \\/* multiline comment!
@@ -228,7 +225,7 @@ test "scan malformed multiline comments" {
         \\/* multiline comment that won't close!
         \\      /* nested multiline comment! */
     ;
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     var tok = s.next();
     try std.testing.expectEqualStrings(contents, tok.symbol);
@@ -238,7 +235,7 @@ test "scan malformed multiline comments" {
 test "peek lexems without modifying the state of the tokenizer" {
     const contents = "asdf 123 /* asd */";
 
-    var s = Scanner.init(contents, null, null);
+    var s = Scanner.init(contents, null);
 
     var tok = s.peek();
     try std.testing.expectEqualStrings("asdf", tok.symbol);

@@ -5,9 +5,11 @@ const scanner = @import("scanner.zig");
 const token = @import("token.zig");
 const reporter = @import("reporter.zig");
 
+const tt = token.TokenType;
+
 pub const Arg = struct {
     ident: token.Token,
-    identType: token.TokenType,
+    identType: tt,
 };
 
 pub const ParseError = error{
@@ -55,7 +57,7 @@ pub const Parser = struct {
     }
 
     pub fn parse(self: *Parser) void {
-        while (self.scanner.peek().tokenType != token.TokenType.EOF) {
+        while (self.scanner.peek().tokenType != tt.EOF) {
             self.parseTopLevelStatement() catch {
                 std.log.err("{d}:{d}: {s}", .{ self.failedAt.?.sourceLoc.line, self.failedAt.?.sourceLoc.column, self.errorMsg.? });
                 self.alloc.free(self.errorMsg.?);
@@ -71,7 +73,7 @@ pub const Parser = struct {
         // 3) function definition: <func_decl> <body>
 
         // TODO: parsing the type like this may result in incomprehensible error message talking about IDENT instead of type.
-        const identType = try self.consumeGet(token.TokenType.IDENT);
+        const identType = try self.consumeGet(tt.IDENT);
         _ = types.SimpleType.getType(identType.symbol) orelse {
             self.failedAt = identType;
             // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
@@ -79,21 +81,21 @@ pub const Parser = struct {
             return ParseError.UnexpectedToken;
         };
 
-        const ident = try self.consumeGet(token.TokenType.IDENT);
+        const ident = try self.consumeGet(tt.IDENT);
         _ = ident;
 
         var follows = self.scanner.peek();
-        if (follows.tokenType == token.TokenType.LPAREN) {
+        if (follows.tokenType == tt.LPAREN) {
             // `<type> <ident>(` means that we're parsing function declaration.
             const argList = self.parseArgList() catch unreachable;
             defer argList.deinit(); // TODO(jsfpdn): should not be deinited but inserted into a symbol table instead.
 
             follows = self.scanner.peek();
-            if (follows.tokenType == token.TokenType.SEMICOLON) {
+            if (follows.tokenType == tt.SEMICOLON) {
                 // just a forward function declaration
                 std.log.info("finished with top level function declaration", .{});
-                try self.consume(token.TokenType.SEMICOLON);
-            } else if (follows.tokenType == token.TokenType.LBRACE) {
+                try self.consume(tt.SEMICOLON);
+            } else if (follows.tokenType == tt.LBRACE) {
                 try self.parseBody();
                 std.log.info("parsed function body", .{});
             } else {
@@ -102,7 +104,7 @@ pub const Parser = struct {
                 _ = self.scanner.next();
                 return ParseError.UnexpectedToken;
             }
-        } else if (token.TokenType.isAssignment(follows.tokenType)) {
+        } else if (tt.isAssignment(follows.tokenType)) {
             // everything ok - got identifier
             // parse expression (watch out, cannot contain function calls)
             _ = try self.parseExpression();
@@ -118,12 +120,12 @@ pub const Parser = struct {
     fn parseStatement(self: *Parser) ParseError!void {
         const tok = self.scanner.peek();
         try switch (tok.tokenType) {
-            token.TokenType.IDENT => self.parseVariableAssignment(),
-            token.TokenType.LBRACE => self.parseBody(),
-            token.TokenType.IF => self.parseIfStatement(),
-            token.TokenType.FOR => self.parseForStatement(),
-            token.TokenType.WHILE => self.parseWhileStatement(),
-            token.TokenType.RETURN => {},
+            tt.IDENT => self.parseVariableAssignment(),
+            tt.LBRACE => self.parseBody(),
+            tt.IF => self.parseIfStatement(),
+            tt.FOR => self.parseForStatement(),
+            tt.WHILE => self.parseWhileStatement(),
+            tt.RETURN => {},
             else => {
                 if (types.SimpleType.getType(tok.symbol)) |t| {
                     _ = t;
@@ -143,11 +145,11 @@ pub const Parser = struct {
         // `asd = return_i32();` should all work.
         // TODO: type checking
 
-        const lhs = try self.consumeGet(token.TokenType.IDENT);
+        const lhs = try self.consumeGet(tt.IDENT);
         _ = lhs;
 
         const assignOp = self.scanner.next();
-        if (!token.TokenType.isAssignment(assignOp.tokenType)) {
+        if (!tt.isAssignment(assignOp.tokenType)) {
             std.log.err("expected variable assignment, found {s}", .{@tagName(assignOp.tokenType)});
             return ParseError.UnexpectedToken;
         }
@@ -155,29 +157,29 @@ pub const Parser = struct {
         const rhs = try self.parseExpression();
         _ = rhs;
 
-        try self.consume(token.TokenType.SEMICOLON);
+        try self.consume(tt.SEMICOLON);
     }
 
     fn parseIfStatement(self: *Parser) ParseError!void {
         // if (<expr>) <body> | <stmnt>; else <body> | <stmnt>;
         // TODO: type checking
-        try self.consume(scanner.TokenType.IF);
-        try self.consume(scanner.TokenType.LPAREN);
+        try self.consume(tt.IF);
+        try self.consume(tt.LPAREN);
         // TODO: should it be parseExpression or parseLogicExpressions?
         const cond = try self.parseExpression();
         _ = cond;
 
-        try self.consume(scanner.TokenType.RPAREN);
+        try self.consume(tt.RPAREN);
         // TODO: now can follow either a body or single statement followed by semicolon.
-        if (self.scanner.peek().tokenType != token.TokenType.LBRACE) {
+        if (self.scanner.peek().tokenType != tt.LBRACE) {
             try self.parseStatement();
         } else {
             try self.parseBody();
         }
 
-        try self.consume(scanner.TokenType.ELSE);
+        try self.consume(tt.ELSE);
 
-        if (self.scanner.peek().tokenType != token.TokenType.LBRACE) {
+        if (self.scanner.peek().tokenType != tt.LBRACE) {
             try self.parseStatement();
         } else {
             try self.parseBody();
@@ -185,27 +187,27 @@ pub const Parser = struct {
     }
 
     fn parseForStatement(self: *Parser) ParseError!void {
-        try self.consume(scanner.TokenType.FOR);
-        try self.consume(scanner.TokenType.LPAREN);
+        try self.consume(tt.FOR);
+        try self.consume(tt.LPAREN);
 
-        if (self.scanner.peek().tokenType != token.TokenType.COMMA) {
+        if (self.scanner.peek().tokenType != tt.COMMA) {
             // TODO: try both variable assignment and variable declaration?
             try self.parseVariableDeclaration();
         }
 
-        try self.consume(scanner.TokenType.COMMA);
+        try self.consume(tt.COMMA);
 
-        if (self.scanner.peek().tokenType != token.TokenType.COMMA) {
+        if (self.scanner.peek().tokenType != tt.COMMA) {
             _ = try self.parseLogicExpressions();
         }
 
-        try self.consume(scanner.TokenType.COMMA);
+        try self.consume(tt.COMMA);
 
-        if (self.scanner.peek().tokenType != token.TokenType.RPAREN) {
+        if (self.scanner.peek().tokenType != tt.RPAREN) {
             try self.parseVariableAssignment();
         }
 
-        try self.consume(scanner.TokenType.RPAREN);
+        try self.consume(tt.RPAREN);
         try self.parseBody();
     }
 
@@ -215,7 +217,7 @@ pub const Parser = struct {
 
     fn parseArgList(self: *Parser) !std.ArrayList(Arg) {
         var tok = self.scanner.next();
-        if (tok.tokenType != token.TokenType.LPAREN) {
+        if (tok.tokenType != tt.LPAREN) {
             std.log.err("expected '(' but found {s}", .{@tagName(tok.tokenType)});
             return error.ExpectedLPAREN;
         }
@@ -225,12 +227,12 @@ pub const Parser = struct {
 
         while (true) {
             var nextTok = self.scanner.next();
-            if (nextTok.tokenType == token.TokenType.RPAREN) {
+            if (nextTok.tokenType == tt.RPAREN) {
                 break;
             }
 
             if (expectComma) {
-                if (nextTok.tokenType != token.TokenType.COMMA) {
+                if (nextTok.tokenType != tt.COMMA) {
                     std.log.err("expected ',' but got {s}", .{@tagName(nextTok.tokenType)});
                     return error.ExpectedComma;
                 }
@@ -239,7 +241,7 @@ pub const Parser = struct {
                 nextTok = self.scanner.next();
             }
 
-            if (nextTok.tokenType != token.TokenType.IDENT) {
+            if (nextTok.tokenType != tt.IDENT) {
                 std.log.err("expected IDENT but got {s}", .{@tagName(nextTok.tokenType)});
                 return error.ExpectedIdentifier;
             }
@@ -258,10 +260,10 @@ pub const Parser = struct {
     }
 
     fn parseBody(self: *Parser) ParseError!void {
-        try self.consume(token.TokenType.LBRACE);
+        try self.consume(tt.LBRACE);
 
         var tok = self.scanner.peek();
-        while (tok.tokenType != token.TokenType.RBRACE and tok.tokenType != token.TokenType.EOF) {
+        while (tok.tokenType != tt.RBRACE and tok.tokenType != tt.EOF) {
             try self.parseStatement();
             tok = self.scanner.peek();
         }
@@ -284,12 +286,12 @@ pub const Parser = struct {
         // * automatic type conversion if one branch is more specific than the other
 
         var tok = self.scanner.peek();
-        if (tok.tokenType != token.TokenType.QST) {
+        if (tok.tokenType != tt.QUESTION_MARK) {
             return exp;
         }
 
         var thenBranch = try self.parseExpression();
-        try self.consume(token.TokenType.COLON);
+        try self.consume(tt.COLON);
         var elseBranch = try self.parseExpression();
 
         _ = thenBranch;
@@ -304,7 +306,7 @@ pub const Parser = struct {
 
         var tok = self.scanner.peek();
         switch (tok.tokenType) {
-            token.TokenType.OR, token.TokenType.AND, token.TokenType.LAND, token.TokenType.LOR => {},
+            tt.OR, tt.AND, tt.LAND, tt.LOR => {},
             else => return exp,
         }
 
@@ -314,10 +316,10 @@ pub const Parser = struct {
         while (true) {
             tok = self.scanner.peek();
             switch (tok.tokenType) {
-                token.TokenType.OR => {},
-                token.TokenType.AND => {},
-                token.TokenType.LAND => {},
-                token.TokenType.LOR => {},
+                tt.OR => {},
+                tt.AND => {},
+                tt.LAND => {},
+                tt.LOR => {},
                 else => return exp,
             }
 
@@ -330,7 +332,7 @@ pub const Parser = struct {
     // E^4, unary not
     fn parseNot(self: *Parser) ParseError!Expression {
         const tok = self.scanner.peek();
-        if (tok.tokenType != token.TokenType.NOT) {
+        if (tok.tokenType != tt.NOT) {
             return self.parseRelationalExpression();
         }
 
@@ -347,7 +349,7 @@ pub const Parser = struct {
 
         var tok = self.scanner.peek();
         switch (tok.tokenType) {
-            token.TokenType.EQL, token.TokenType.NEQ, token.TokenType.LSS, token.TokenType.GTR, token.TokenType.LEQ, token.TokenType.GEQ => {},
+            tt.EQL, tt.NEQ, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
             else => return exp,
         }
 
@@ -355,7 +357,7 @@ pub const Parser = struct {
             tok = self.scanner.peek();
 
             switch (tok.tokenType) {
-                token.TokenType.EQL, token.TokenType.NEQ, token.TokenType.LSS, token.TokenType.GTR, token.TokenType.LEQ, token.TokenType.GEQ => {},
+                tt.EQL, tt.NEQ, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
                 else => return exp,
             }
 
@@ -372,7 +374,7 @@ pub const Parser = struct {
 
         var tok = self.scanner.peek();
         switch (tok.tokenType) {
-            token.TokenType.ADD, token.TokenType.SUB, token.TokenType.LSS, token.TokenType.GTR, token.TokenType.LEQ, token.TokenType.GEQ => {},
+            tt.ADD, tt.SUB, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
             else => return exp,
         }
 
@@ -380,7 +382,7 @@ pub const Parser = struct {
             tok = self.scanner.peek();
 
             switch (tok.tokenType) {
-                token.TokenType.ADD, token.TokenType.SUB, token.TokenType.LSS, token.TokenType.GTR, token.TokenType.LEQ, token.TokenType.GEQ => {},
+                tt.ADD, tt.SUB, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
                 else => return exp,
             }
 
@@ -395,7 +397,7 @@ pub const Parser = struct {
         // TODO: handle exps (type checking)
         const tok = self.scanner.peek();
         return switch (tok.tokenType) {
-            token.TokenType.SUB, token.TokenType.NEQ => self.parseUnaryOperators(),
+            tt.SUB, tt.NEQ => self.parseUnaryOperators(),
             else => self.parseArithmeticExpressionsLower(),
         };
     }
@@ -406,7 +408,7 @@ pub const Parser = struct {
 
         var tok = self.scanner.peek();
         switch (tok.tokenType) {
-            token.TokenType.MUL, token.TokenType.QUO, token.TokenType.REM => {},
+            tt.MUL, tt.QUO, tt.REM => {},
             else => return exp,
         }
 
@@ -414,7 +416,7 @@ pub const Parser = struct {
             tok = self.scanner.peek();
 
             switch (tok.tokenType) {
-                token.TokenType.MUL, token.TokenType.QUO, token.TokenType.REM => {},
+                tt.MUL, tt.QUO, tt.REM => {},
                 else => return exp, // TODO: this may be incorrect.
             }
 
@@ -434,8 +436,7 @@ pub const Parser = struct {
         while (true) {
             const tok = self.scanner.peek();
             switch (tok.tokenType) {
-                token.TokenType.INC, token.TokenType.DEC => {
-                    // TODO: refactor this mess.
+                tt.INC, tt.DEC => {
                     if (!types.IsNum(exp.expType)) {
                         self.failedAt = tok;
                         self.errorMsg = std.fmt.allocPrint(self.alloc, "value of type {s} cannot be incremented or decremented", .{@tagName(exp.expType)}) catch unreachable;
@@ -445,13 +446,13 @@ pub const Parser = struct {
                     _ = self.scanner.next();
                     return exp;
                 },
-                token.TokenType.LBRACK => {
+                tt.LBRACK => {
                     // TODO: handle brackets.
                     //  * checking bounds?
                     //  * checking type? e.g. `exp` is not of type array of somethings therefore cannot be indexed
                     //  * parse the indexing expression even when typecheking^ fails?
                     //  * special care for multidimensional array
-                    try self.consume(token.TokenType.LBRACK);
+                    try self.consume(tt.LBRACK);
                     const indexExp = try self.parseExpression();
                     // TODO: this^ can fail and write some message. This means that there cannot be just a single
                     // error message but array of them. The error reporting below therefore can override something.
@@ -462,7 +463,7 @@ pub const Parser = struct {
                         return ParseError.TypeError;
                     }
 
-                    try self.consume(token.TokenType.RBRACK);
+                    try self.consume(tt.RBRACK);
                     // TODO: what expression should be returned?
                     return exp;
                 },
@@ -479,12 +480,12 @@ pub const Parser = struct {
         // TODO: handle type casting
 
         switch (tok.tokenType) {
-            token.TokenType.LPAREN => {
+            tt.LPAREN => {
                 const exp = try self.parseExpression();
-                try self.consume(token.TokenType.LPAREN);
+                try self.consume(tt.LPAREN);
                 return exp;
             },
-            token.TokenType.IDENT => {
+            tt.IDENT => {
                 // TODO:
                 // * check identifier in the symbol table
                 //    => whether it's already declared
@@ -495,33 +496,33 @@ pub const Parser = struct {
                     .expType = types.Type{ .sType = types.SimpleType.STRING },
                 };
             },
-            token.TokenType.C_INT => {
+            tt.C_INT => {
                 // TODO: check ranges and decide the type.
                 return Expression{
                     .expType = types.Type{ .sType = types.SimpleType.I32 },
                 };
             },
-            token.TokenType.C_FLOAT => {
+            tt.C_FLOAT => {
                 return Expression{
                     .expType = types.Type{ .sType = types.SimpleType.FLOAT },
                 };
             },
-            token.TokenType.C_BOOL => {
+            tt.C_BOOL => {
                 return Expression{
                     .expType = types.Type{ .sType = types.SimpleType.BOOL },
                 };
             },
-            token.TokenType.C_STRING => {
+            tt.C_STRING => {
                 return Expression{
                     .expType = types.Type{ .sType = types.SimpleType.STRING },
                 };
             },
-            token.TokenType.C_CHAR => {
+            tt.C_CHAR => {
                 return Expression{
                     .expType = types.Type{ .sType = types.SimpleType.CHAR },
                 };
             },
-            token.TokenType.AT => {
+            tt.AT => {
                 // todo: handle builtin functions (only casting here makes sense)
             },
             else => {
@@ -532,14 +533,14 @@ pub const Parser = struct {
         unreachable;
     }
 
-    fn consume(self: *Parser, want: scanner.TokenType) ParseError!void {
+    fn consume(self: *Parser, want: tt) ParseError!void {
         _ = try self.consumeGet(want);
     }
 
-    fn consumeGet(self: *Parser, want: scanner.TokenType) ParseError!scanner.Token {
+    fn consumeGet(self: *Parser, want: tt) ParseError!scanner.Token {
         const next = self.scanner.next();
 
-        if (next.tokenType == token.TokenType.ILLEGAL) {
+        if (next.tokenType == tt.ILLEGAL) {
             // It does not make sense to report ILLEGAL tokens here since the scanner has already done it.
             // TODO: Remove error reporting from scanner and do it just here for simplicity?
             return ParseError.UnexpectedToken;
@@ -548,7 +549,7 @@ pub const Parser = struct {
         if (want != next.tokenType) {
             self.failedAt = next;
             // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
-            self.errorMsg = std.fmt.allocPrint(self.alloc, "expected '{s}' but found '{s}' instead", .{ token.TokenType.str(want), token.TokenType.str(next.tokenType) }) catch unreachable;
+            self.errorMsg = std.fmt.allocPrint(self.alloc, "expected '{s}' but found '{s}' instead", .{ tt.str(want), tt.str(next.tokenType) }) catch unreachable;
             return ParseError.UnexpectedToken;
         }
 
