@@ -117,25 +117,6 @@ pub const Parser = struct {
         }
     }
 
-    fn parseStatement(self: *Parser) ParseError!void {
-        const tok = self.scanner.peek();
-        try switch (tok.tokenType) {
-            tt.IDENT => self.parseVariableAssignment(),
-            tt.LBRACE => self.parseBody(),
-            tt.IF => self.parseIfStatement(),
-            tt.FOR => self.parseForStatement(),
-            tt.WHILE => self.parseWhileStatement(),
-            tt.RETURN => {},
-            else => {
-                if (types.SimpleType.getType(tok.symbol)) |t| {
-                    _ = t;
-                    return self.parseVariableDeclaration();
-                }
-                // TODO: return error & report it.
-            },
-        };
-    }
-
     fn parseVariableDeclaration(self: *Parser) ParseError!void {
         // `i32 asd;`, `i32 asd = 123;`
         _ = self;
@@ -160,59 +141,108 @@ pub const Parser = struct {
         try self.consume(tt.SEMICOLON);
     }
 
-    fn parseIfStatement(self: *Parser) ParseError!void {
-        // if (<expr>) <body> | <stmnt>; else <body> | <stmnt>;
-        // TODO: type checking
+    // E
+    pub fn parseExpression(self: *Parser) ParseError!void {
+        var tok = self.scanner.peek();
+
+        while (true) {
+            switch (tok.tokenType) {
+                tt.RBRACE, tt.RBRACK, tt.RPAREN, tt.COMMA, tt.COLON => break,
+                tt.WHILE => try self.parseWhile(),
+                tt.DO => try self.parseDoWhile(),
+                tt.FOR => try self.parseFor(),
+                tt.IF => try self.parseIf(),
+                tt.RETURN => try self.parseReturn(),
+                tt.BREAK => try self.parseBreak(),
+                tt.CONTINUE => try self.parseContinue(),
+                tt.SEMICOLON => try self.consume(tt.SEMICOLON),
+                else => {
+                    _ = try self.parseSubExpression();
+                    // TODO: semicolon magic here.
+                },
+            }
+
+            tok = self.scanner.next();
+        }
+    }
+
+    fn parseIf(self: *Parser) ParseError!void {
         try self.consume(tt.IF);
         try self.consume(tt.LPAREN);
-        // TODO: should it be parseExpression or parseLogicExpressions?
-        const cond = try self.parseExpression();
-        _ = cond;
-
+        _ = try self.parseExpression(); // TODO: typecheck
         try self.consume(tt.RPAREN);
-        // TODO: now can follow either a body or single statement followed by semicolon.
-        if (self.scanner.peek().tokenType != tt.LBRACE) {
-            try self.parseStatement();
-        } else {
-            try self.parseBody();
+        try self.parseBody();
+
+        if (self.scanner.peek().tokenType != tt.ELSE) {
+            // TODO: implement this.
+            return;
         }
 
-        try self.consume(tt.ELSE);
+        self.consume(tt.ELSE) catch unreachable;
 
-        if (self.scanner.peek().tokenType != tt.LBRACE) {
-            try self.parseStatement();
+        if (self.scanner.peek().tokenType == tt.IF) {
+            _ = try self.parseIf();
         } else {
             try self.parseBody();
         }
     }
 
-    fn parseForStatement(self: *Parser) ParseError!void {
-        try self.consume(tt.FOR);
+    fn parseFor(self: *Parser) ParseError!void {
+        self.consume(tt.FOR) catch unreachable;
         try self.consume(tt.LPAREN);
-
-        if (self.scanner.peek().tokenType != tt.COMMA) {
-            // TODO: try both variable assignment and variable declaration?
-            try self.parseVariableDeclaration();
-        }
-
+        _ = try self.parseExpression();
         try self.consume(tt.COMMA);
-
-        if (self.scanner.peek().tokenType != tt.COMMA) {
-            _ = try self.parseLogicExpressions();
-        }
-
+        _ = try self.parseExpression(); // TODO: typecheck
         try self.consume(tt.COMMA);
-
-        if (self.scanner.peek().tokenType != tt.RPAREN) {
-            try self.parseVariableAssignment();
-        }
-
+        _ = try self.parseExpression();
         try self.consume(tt.RPAREN);
         try self.parseBody();
     }
 
-    fn parseWhileStatement(self: *Parser) void {
-        _ = self;
+    fn parseWhile(self: *Parser) ParseError!void {
+        self.consume(tt.WHILE) catch unreachable;
+        try self.consume(tt.LPAREN);
+        _ = try self.parseExpression(); // TODO: typecheck
+        try self.parseBody();
+    }
+
+    fn parseDoWhile(self: *Parser) ParseError!void {
+        self.consume(tt.DO) catch unreachable;
+        try self.parseBody();
+        try self.consume(tt.WHILE);
+        try self.consume(tt.LPAREN);
+        _ = try self.parseExpression(); // TODO: typecheck
+        try self.consume(tt.RPAREN);
+    }
+
+    fn parseBody(self: *Parser) ParseError!void {
+        self.consume(tt.LBRACE) catch unreachable;
+        _ = try self.parseExpression();
+        try self.consume(tt.RBRACE);
+    }
+
+    fn parseReturn(self: *Parser) ParseError!void {
+        self.consume(tt.RETURN) catch unreachable;
+
+        switch (self.scanner.peek().tokenType) {
+            tt.SEMICOLON, tt.RPAREN, tt.RBRACK, tt.RBRACE, tt.COMMA, tt.COLON => {
+                // TODO: check that the return type of the current context is void ("unit"),
+                // throw type error otherwise since return argument is expected (of the correct type).
+            },
+            else => try self.parseExpression(),
+        }
+    }
+
+    fn parseBreak(self: *Parser) ParseError!void {
+        // TODO: check that the break_stack is not empty (=> there's something to break out of)
+        self.consume(tt.BREAK) catch unreachable;
+        // TODO: semicolon magic here.
+    }
+
+    fn parseContinue(self: *Parser) ParseError!void {
+        // TODO: check that the continue_stack is not empty (=> there's something to continue in)
+        self.consume(tt.CONTINUE) catch unreachable;
+        // TODO: semicolon magic here.
     }
 
     fn parseArgList(self: *Parser) !std.ArrayList(Arg) {
@@ -259,20 +289,13 @@ pub const Parser = struct {
         return args;
     }
 
-    fn parseBody(self: *Parser) ParseError!void {
-        try self.consume(tt.LBRACE);
-
-        var tok = self.scanner.peek();
-        while (tok.tokenType != tt.RBRACE and tok.tokenType != tt.EOF) {
-            try self.parseStatement();
-            tok = self.scanner.peek();
-        }
-    }
-
     // E^1
-    pub fn parseExpression(self: *Parser) ParseError!Expression {
-        return self.parseTernaryExpression();
-        // TODO: handle assignments with operations.
+    fn parseSubExpression(self: *Parser) ParseError!Expression {
+        // TODO: implement me.
+        _ = self;
+        return Expression{
+            .expType = types.Type{ .sType = types.SimpleType.CHAR },
+        };
     }
 
     // E^2

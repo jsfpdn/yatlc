@@ -6,6 +6,18 @@ const scanner = @import("scanner.zig");
 
 const Token = scanner.Token;
 
+pub const Level = enum {
+    WARNING,
+    ERROR,
+
+    pub fn str(self: Level) [:0]const u8 {
+        return switch (self) {
+            Level.WARNING => "warning",
+            Level.ERROR => "error",
+        };
+    }
+};
+
 pub const Reporter = struct {
     contents: []const u8,
     file: []const u8,
@@ -20,20 +32,18 @@ pub const Reporter = struct {
     }
 
     /// report prints out a diagnostic message and relevant info regarding the lexing error.
-    pub fn report(self: *const Reporter, tok: Token, msg: []const u8) void {
+    pub fn report(self: *const Reporter, tok: Token, level: Level, msg: []const u8) void {
         // TODO(jsfpdn): fix reporting of multiline comments.
         const loc = self.line(tok);
 
-        self.writer.print("{s}:{d}:{d}: Could not tokenize '{s}': {s}.\n", .{ self.file, tok.sourceLoc.line, tok.sourceLoc.column, tok.symbol, msg }) catch unreachable;
+        self.writer.print("{s}:{d}:{d}: {s}: {s}.\n", .{ self.file, tok.sourceLoc.line, tok.sourceLoc.column, level.str(), msg }) catch unreachable;
         self.writer.print("    {s}\n", .{self.contents[loc.start..loc.end]}) catch unreachable;
 
         self.pad(' ', 4 + tok.bufferLoc.start - loc.start);
-        self.writer.print("↑", .{}) catch unreachable;
-        self.pad('~', tok.bufferLoc.end - tok.bufferLoc.start);
-        self.writer.print("\n", .{}) catch unreachable;
+        self.writer.print("^", .{}) catch unreachable;
 
         self.pad(' ', 4 + tok.bufferLoc.start - loc.start);
-        self.writer.print("└ Note: invalid token starts here\n\n", .{}) catch unreachable;
+        self.writer.print("|- Note: invalid token starts here\n\n", .{}) catch unreachable;
     }
 
     /// line returns the beginning and end of the line where the token resides.

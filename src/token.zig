@@ -106,6 +106,7 @@ pub const TokenType = enum(u8) {
     IF,
     RETURN,
     WHILE,
+    DO,
     FOR,
 
     // special "@" symbol for type conversions and built-in functions
@@ -123,6 +124,8 @@ pub const TokenType = enum(u8) {
         .{ "if", .IF },
         .{ "return", .RETURN },
         .{ "while", .WHILE },
+        .{ "do", .DO },
+        .{ "for", .FOR },
     });
 
     const builtins = std.ComptimeStringMap(TokenType, .{
@@ -215,6 +218,7 @@ pub const TokenType = enum(u8) {
         "if",
         "return",
         "while",
+        "do",
         "for",
 
         "@",
