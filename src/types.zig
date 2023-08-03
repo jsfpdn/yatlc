@@ -3,24 +3,30 @@ const std = @import("std");
 pub const SimpleType = enum(u8) {
     I32,
     I16,
+    I8,
     U32,
     U16,
-    FLOAT,
+    U8,
+    F32,
+    F16,
     BOOL,
     STRING,
     CHAR,
-    VOID,
+    UNIT,
 
     const SimpleTypeTable = [@typeInfo(SimpleType).Enum.fields.len][:0]const u8{
         "i32",
         "i16",
+        "i8",
         "u32",
         "u16",
-        "float",
+        "u8",
+        "f32",
+        "f16",
         "bool",
         "string",
         "char",
-        "void",
+        "unit",
     };
 
     pub fn getType(str: []const u8) ?SimpleType {
@@ -39,12 +45,13 @@ pub const SimpleType = enum(u8) {
 
 pub const Array = struct {
     dimensions: []const u8,
-    ofType: SimpleType,
+    ofType: *Type,
 };
 
 pub const Type = union(enum) {
     sType: SimpleType,
     cType: Array,
+    constant: i128,
 };
 
 pub fn IsIntegral(t: Type) bool {

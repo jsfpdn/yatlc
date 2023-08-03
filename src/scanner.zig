@@ -95,6 +95,7 @@ pub const Scanner = struct {
             ';' => tok.tokenType = TokenType.SEMICOLON,
             ':' => tok.tokenType = TokenType.COLON,
             '@' => tok.tokenType = TokenType.AT,
+            '#' => tok.tokenType = TokenType.HASH,
             '^' => tok.tokenType = TokenType.XOR,
             '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
@@ -111,9 +112,6 @@ pub const Scanner = struct {
             'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
             '0'...'9' => self.parseNumber(&tok, c),
             '.' => {
-                // Either a single period or a floating point number with just a decimal part.
-                tok.tokenType = TokenType.PERIOD;
-
                 if (self.peekChar()) |p| {
                     if (isNumeric(p)) {
                         tok.tokenType = TokenType.C_FLOAT;

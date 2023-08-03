@@ -90,7 +90,6 @@ pub const TokenType = enum(u8) {
     LBRACK, // [
     LBRACE, // {
     COMMA, // ,
-    PERIOD, // .
 
     RPAREN, // )
     RBRACK, // ]
@@ -111,6 +110,9 @@ pub const TokenType = enum(u8) {
 
     // special "@" symbol for type conversions and built-in functions
     AT, // @
+
+    // special "#" symbol for address-of operator
+    HASH, // #
 
     // names of built-in functions that must be preceeded with "@"
     LEN, // len
@@ -203,7 +205,6 @@ pub const TokenType = enum(u8) {
         "[",
         "{",
         ",",
-        ".",
 
         ")",
         "]",
@@ -222,6 +223,7 @@ pub const TokenType = enum(u8) {
         "for",
 
         "@",
+        "#",
 
         "len",
         "print",
