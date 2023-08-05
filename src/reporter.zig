@@ -64,10 +64,8 @@ pub const Reporter = struct {
     }
 
     fn pad(self: *const Reporter, c: u8, times: usize) void {
-        var i: u32 = 0;
-        while (i < times) {
+        for (0..times - 1) |_| {
             self.writer.print("{c}", .{c}) catch unreachable;
-            i += 1;
         }
     }
 };

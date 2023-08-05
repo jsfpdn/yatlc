@@ -145,11 +145,11 @@ pub const TokenType = enum(u8) {
     }
 
     pub fn isBuiltin(token: TokenType) bool {
-        return @enumToInt(token) >= @enumToInt(TokenType.LEN) and @enumToInt(token) <= @enumToInt(TokenType.READ);
+        return @intFromEnum(token) >= @intFromEnum(TokenType.LEN) and @intFromEnum(token) <= @intFromEnum(TokenType.READ);
     }
 
     pub fn isAssignment(token: TokenType) bool {
-        return @enumToInt(token) >= @enumToInt(TokenType.ASSIGN) and @enumToInt(token) <= @enumToInt(TokenType.XOR_ASSIGN);
+        return @intFromEnum(token) >= @intFromEnum(TokenType.ASSIGN) and @intFromEnum(token) <= @intFromEnum(TokenType.XOR_ASSIGN);
     }
 
     pub const TokenNameTable = [@typeInfo(TokenType).Enum.fields.len][:0]const u8{
@@ -231,7 +231,7 @@ pub const TokenType = enum(u8) {
     };
 
     pub fn str(self: TokenType) [:0]const u8 {
-        return TokenNameTable[@enumToInt(self)];
+        return TokenNameTable[@intFromEnum(self)];
     }
 };
 

@@ -30,13 +30,10 @@ pub const SimpleType = enum(u8) {
     };
 
     pub fn getType(str: []const u8) ?SimpleType {
-        var i: i8 = 0;
-
-        for (SimpleTypeTable) |t| {
+        for (SimpleTypeTable, 0..) |t, i| {
             if (std.mem.eql(u8, str, t)) {
-                return @intToEnum(SimpleType, i);
+                return @as(SimpleType, @enumFromInt(i));
             }
-            i += 1;
         }
 
         return null;

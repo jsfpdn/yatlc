@@ -1,7 +1,7 @@
 # `yatlc`: yet-another-toy-language compiler
 
 This is a repository for the `yatl` compiler, a project for a compiler course.
-`yatlc` is written in [Zig](https://ziglang.org).
+`yatlc` is written in [Zig 0.11.0](https://ziglang.org).
 
 ## Building `yatlc`
 
