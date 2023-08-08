@@ -7,8 +7,8 @@ pub const SimpleType = enum(u8) {
     U32,
     U16,
     U8,
-    F32,
-    F16,
+    FLOAT,
+    DOUBLE,
     BOOL,
     STRING,
     CHAR,
@@ -21,8 +21,8 @@ pub const SimpleType = enum(u8) {
         "u32",
         "u16",
         "u8",
-        "f32",
-        "f16",
+        "float",
+        "double",
         "bool",
         "string",
         "char",
@@ -41,14 +41,32 @@ pub const SimpleType = enum(u8) {
 };
 
 pub const Array = struct {
-    dimensions: []const u8,
-    ofType: *Type,
+    dimensions: usize = 0,
+    ofType: *Type = undefined,
+
+    fn destroy(self: *Array, alloc: std.mem.Allocator) void {
+        self.*.ofType.destroy(alloc);
+    }
 };
 
-pub const Type = union(enum) {
+pub const TypeTag = enum {
+    sType,
+    cType,
+    constant,
+};
+
+pub const Type = union(TypeTag) {
     sType: SimpleType,
     cType: Array,
     constant: i128,
+
+    pub fn destroy(self: *Type, alloc: std.mem.Allocator) void {
+        switch (self.*) {
+            TypeTag.cType => |*array| array.destroy(alloc),
+            else => {},
+        }
+        alloc.destroy(self);
+    }
 };
 
 pub fn IsIntegral(t: Type) bool {
@@ -78,4 +96,16 @@ pub fn IsNum(t: Type) bool {
         },
         else => false,
     };
+}
+
+test "array type does not leak memory" {
+    var innerT = try std.testing.allocator.create(Type);
+    innerT.* = Type{ .sType = SimpleType.I8 };
+
+    var t = try std.testing.allocator.create(Type);
+    t.* = Type{ .cType = Array{
+        .ofType = innerT,
+    } };
+
+    defer t.destroy(std.testing.allocator);
 }

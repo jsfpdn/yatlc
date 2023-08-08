@@ -36,6 +36,7 @@ pub const TokenType = enum(u8) {
     IDENT, // variable_name
 
     // Constants
+    C_NULL, // null
     C_INT, // 420
     C_FLOAT, // 3.14
     C_CHAR, // 'a'
@@ -69,7 +70,12 @@ pub const TokenType = enum(u8) {
     // Bitwise assignment operators
     AND_ASSIGN, // &=
     OR_ASSIGN, // |=
-    XOR_ASSIGN, // ^
+    XOR_ASSIGN, // ^=
+
+    LSH_ASSIGN, // <<=
+    RSH_ASSIGN, // >>=
+    LAND_ASSIGN, // &&=
+    LOR_ASSIGN, // ||=
 
     // Logical operators
     LAND, // &&
@@ -97,6 +103,7 @@ pub const TokenType = enum(u8) {
     SEMICOLON, // ;
     COLON, // :
     QUESTION_MARK, // ?
+    D_QUESTION_MARK, // ??
 
     // keywords
     BREAK,
@@ -158,6 +165,7 @@ pub const TokenType = enum(u8) {
         "COMMENT",
 
         "IDENT",
+        "NULL",
         "INT",
         "FLOAT",
         "CHAR",
@@ -188,6 +196,11 @@ pub const TokenType = enum(u8) {
         "|=",
         "^=",
 
+        "<<=",
+        ">>=",
+        "&&=",
+        "||=",
+
         "&&",
         "||",
         "++",
@@ -212,6 +225,7 @@ pub const TokenType = enum(u8) {
         ";",
         ":",
         "?",
+        "??",
 
         "break",
         "continue",

@@ -12,9 +12,12 @@ pub const Arg = struct {
     identType: tt,
 };
 
-pub const ParseError = error{
-    UnexpectedToken,
-    TypeError,
+pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory };
+
+pub const ErrorInfo = struct {
+    failedAt: token.Token,
+    msg: [:0]const u8,
+    recoverable: bool = false,
 };
 
 pub const Expression = struct {
@@ -34,15 +37,12 @@ pub const Parser = struct {
 
     alloc: std.mem.Allocator,
 
-    // failedAt contains the token where the parsing failed.
-    failedAt: ?token.Token,
-    // errorMsg contains additional information about the encountered error.
-    errorMsg: ?[]const u8,
+    // errs describes the set of errors encountered during parsing.
+    errs: std.ArrayList(ErrorInfo),
 
     // TODO:
     // * IR emitter
     // * analysis: main is defined (with correct arguments)
-    // * unified error reporting
     // * should we build explicit trees when parsing expressions?
     // * zero-initialized variables?
 
@@ -51,78 +51,74 @@ pub const Parser = struct {
             .scanner = s,
             .rep = r,
             .alloc = alloc,
-            .failedAt = null,
-            .errorMsg = null,
+            .errs = std.ArrayList(ErrorInfo).init(alloc),
         };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.errs.deinit();
     }
 
     pub fn parse(self: *Parser) void {
         while (self.scanner.peek().tokenType != tt.EOF) {
             self.parseTopLevelStatement() catch {
-                std.log.err("{d}:{d}: {s}", .{ self.failedAt.?.sourceLoc.line, self.failedAt.?.sourceLoc.column, self.errorMsg.? });
-                self.alloc.free(self.errorMsg.?);
+                // std.log.err("{d}:{d}: {s}", .{ self.failedAt.?.sourceLoc.line, self.failedAt.?.sourceLoc.column, self.errorMsg.? });
             };
         }
-
         // TODO: check for main etc.
     }
 
     fn parseTopLevelStatement(self: *Parser) !void {
         // 1) global variable definition: <type> <ident> = <expr>;
         // 2) (forward) function declaration: <type> <ident>(<arglist>);
-        // 3) function definition: <func_decl> <body>
-
-        // TODO: parsing the type like this may result in incomprehensible error message talking about IDENT instead of type.
-        const identType = try self.consumeGet(tt.IDENT);
-        _ = types.SimpleType.getType(identType.symbol) orelse {
-            self.failedAt = identType;
-            // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
-            self.errorMsg = std.fmt.allocPrint(self.alloc, "expected a type but found '{s}' instead", .{identType.str()}) catch unreachable;
-            return ParseError.UnexpectedToken;
-        };
+        // 3) function definition: <type> <ident>(<arglist>) <body>
+        const t = try self.parseType();
+        _ = t;
 
         const ident = try self.consumeGet(tt.IDENT);
         _ = ident;
-
-        var follows = self.scanner.peek();
-        if (follows.tokenType == tt.LPAREN) {
-            // `<type> <ident>(` means that we're parsing function declaration.
-            const argList = self.parseArgList() catch unreachable;
-            defer argList.deinit(); // TODO(jsfpdn): should not be deinited but inserted into a symbol table instead.
-
-            follows = self.scanner.peek();
-            if (follows.tokenType == tt.SEMICOLON) {
-                // just a forward function declaration
-                std.log.info("finished with top level function declaration", .{});
-                try self.consume(tt.SEMICOLON);
-            } else if (follows.tokenType == tt.LBRACE) {
-                try self.parseBody();
-                std.log.info("parsed function body", .{});
-            } else {
-                self.failedAt = follows;
-                self.errorMsg = std.fmt.allocPrint(self.alloc, "expected ';' or function body but found {s} instead", .{@tagName(follows.tokenType)}) catch unreachable;
-                _ = self.scanner.next();
-                return ParseError.UnexpectedToken;
-            }
-        } else if (tt.isAssignment(follows.tokenType)) {
-            // everything ok - got identifier
-            // parse expression (watch out, cannot contain function calls)
-            _ = try self.parseExpression();
-            std.log.err("would parse expression", .{});
-        } else {
-            self.failedAt = follows;
-            self.errorMsg = std.fmt.allocPrint(self.alloc, "expected either function or variable definition but found {s} instead", .{@tagName(follows.tokenType)}) catch unreachable;
-            _ = self.scanner.next();
-            return ParseError.UnexpectedToken;
-        }
     }
 
-    fn parseVariableDeclaration(self: *Parser) ParseError!void {
+    pub fn parseType(self: *Parser) SyntaxError!*types.Type {
+        var tok = self.scanner.next();
+
+        var tp = try self.alloc.create(types.Type);
+        errdefer self.alloc.destroy(tp);
+
+        return switch (tok.tokenType) {
+            tt.IDENT => if (types.SimpleType.getType(tok.symbol)) |t| {
+                tp.* = types.Type{ .sType = t };
+                return tp;
+            } else {
+                self.errs.append(ErrorInfo{ .failedAt = tok, .msg = "TODO", .recoverable = true }) catch unreachable;
+                return SyntaxError.UnexpectedToken;
+            },
+            tt.LBRACK => {
+                var array: types.Array = .{};
+                while (tok.tokenType != tt.RBRACK) {
+                    try self.consume(tt.SUB);
+                    array.dimensions += 1;
+
+                    tok = self.scanner.next();
+                    if (tok.tokenType == tt.COMMA) {}
+                }
+                array.ofType = try self.parseType();
+                tp.* = types.Type{ .cType = array };
+                return tp;
+            },
+            else => {
+                self.errs.append(ErrorInfo{ .failedAt = tok, .msg = "TODO", .recoverable = true }) catch unreachable;
+                return SyntaxError.UnexpectedToken;
+            },
+        };
+    }
+
+    fn parseVariableDeclaration(self: *Parser) SyntaxError!void {
         // `i32 asd;`, `i32 asd = 123;`
         _ = self;
     }
 
-    fn parseVariableAssignment(self: *Parser) ParseError!void {
+    fn parseVariableAssignment(self: *Parser) SyntaxError!void {
         // `asd = return_i32();` should all work.
         // TODO: type checking
 
@@ -132,7 +128,7 @@ pub const Parser = struct {
         const assignOp = self.scanner.next();
         if (!tt.isAssignment(assignOp.tokenType)) {
             std.log.err("expected variable assignment, found {s}", .{@tagName(assignOp.tokenType)});
-            return ParseError.UnexpectedToken;
+            return SyntaxError.UnexpectedToken;
         }
 
         const rhs = try self.parseExpression();
@@ -142,10 +138,10 @@ pub const Parser = struct {
     }
 
     // E
-    pub fn parseExpression(self: *Parser) ParseError!void {
+    pub fn parseExpression(self: *Parser) SyntaxError!void {
         var tok = self.scanner.peek();
 
-        while (true) {
+        while (tok.tokenType != tt.EOF) {
             switch (tok.tokenType) {
                 tt.RBRACE, tt.RBRACK, tt.RPAREN, tt.COMMA, tt.COLON => break,
                 tt.WHILE => try self.parseWhile(),
@@ -166,7 +162,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseIf(self: *Parser) ParseError!void {
+    fn parseIf(self: *Parser) SyntaxError!void {
         try self.consume(tt.IF);
         try self.consume(tt.LPAREN);
         _ = try self.parseExpression(); // TODO: typecheck
@@ -187,7 +183,7 @@ pub const Parser = struct {
         }
     }
 
-    fn parseFor(self: *Parser) ParseError!void {
+    fn parseFor(self: *Parser) SyntaxError!void {
         self.consume(tt.FOR) catch unreachable;
         try self.consume(tt.LPAREN);
         _ = try self.parseExpression();
@@ -199,14 +195,14 @@ pub const Parser = struct {
         try self.parseBody();
     }
 
-    fn parseWhile(self: *Parser) ParseError!void {
+    fn parseWhile(self: *Parser) SyntaxError!void {
         self.consume(tt.WHILE) catch unreachable;
         try self.consume(tt.LPAREN);
         _ = try self.parseExpression(); // TODO: typecheck
         try self.parseBody();
     }
 
-    fn parseDoWhile(self: *Parser) ParseError!void {
+    fn parseDoWhile(self: *Parser) SyntaxError!void {
         self.consume(tt.DO) catch unreachable;
         try self.parseBody();
         try self.consume(tt.WHILE);
@@ -215,13 +211,13 @@ pub const Parser = struct {
         try self.consume(tt.RPAREN);
     }
 
-    fn parseBody(self: *Parser) ParseError!void {
+    fn parseBody(self: *Parser) SyntaxError!void {
         self.consume(tt.LBRACE) catch unreachable;
         _ = try self.parseExpression();
         try self.consume(tt.RBRACE);
     }
 
-    fn parseReturn(self: *Parser) ParseError!void {
+    fn parseReturn(self: *Parser) SyntaxError!void {
         self.consume(tt.RETURN) catch unreachable;
 
         switch (self.scanner.peek().tokenType) {
@@ -233,13 +229,13 @@ pub const Parser = struct {
         }
     }
 
-    fn parseBreak(self: *Parser) ParseError!void {
+    fn parseBreak(self: *Parser) SyntaxError!void {
         // TODO: check that the break_stack is not empty (=> there's something to break out of)
         self.consume(tt.BREAK) catch unreachable;
         // TODO: semicolon magic here.
     }
 
-    fn parseContinue(self: *Parser) ParseError!void {
+    fn parseContinue(self: *Parser) SyntaxError!void {
         // TODO: check that the continue_stack is not empty (=> there's something to continue in)
         self.consume(tt.CONTINUE) catch unreachable;
         // TODO: semicolon magic here.
@@ -290,7 +286,7 @@ pub const Parser = struct {
     }
 
     // E^1
-    fn parseSubExpression(self: *Parser) ParseError!Expression {
+    fn parseSubExpression(self: *Parser) SyntaxError!Expression {
         // TODO: implement me.
         _ = self;
         return Expression{
@@ -299,7 +295,7 @@ pub const Parser = struct {
     }
 
     // E^2
-    fn parseTernaryExpression(self: *Parser) ParseError!Expression {
+    fn parseTernaryExpression(self: *Parser) SyntaxError!Expression {
         // <b_expr> ? <expr> : <expr>;
         // exp is potentially a boolen condition for the ternary operator.
         var exp = try self.parseLogicExpressions();
@@ -324,7 +320,7 @@ pub const Parser = struct {
     }
 
     // E^3, binary and, or, ||, &&
-    fn parseLogicExpressions(self: *Parser) ParseError!Expression {
+    fn parseLogicExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseNot();
 
         var tok = self.scanner.peek();
@@ -353,7 +349,7 @@ pub const Parser = struct {
     }
 
     // E^4, unary not
-    fn parseNot(self: *Parser) ParseError!Expression {
+    fn parseNot(self: *Parser) SyntaxError!Expression {
         const tok = self.scanner.peek();
         if (tok.tokenType != tt.NOT) {
             return self.parseRelationalExpression();
@@ -366,7 +362,7 @@ pub const Parser = struct {
     }
 
     // E^5, ==, !=, >, <, >=, =<
-    fn parseRelationalExpression(self: *Parser) ParseError!Expression {
+    fn parseRelationalExpression(self: *Parser) SyntaxError!Expression {
         // TODO: handle exp (typechecking)
         var exp = try self.parseArithmeticExpression();
 
@@ -391,7 +387,7 @@ pub const Parser = struct {
     }
 
     // E^6, +, -, >>, <<, &, ^, |
-    fn parseArithmeticExpression(self: *Parser) ParseError!Expression {
+    fn parseArithmeticExpression(self: *Parser) SyntaxError!Expression {
         // TODO: handle exp (typechecking)
         var exp = try self.parseUnaryOperators();
 
@@ -416,7 +412,7 @@ pub const Parser = struct {
     }
 
     // E^7, -, !
-    fn parseUnaryOperators(self: *Parser) ParseError!Expression {
+    fn parseUnaryOperators(self: *Parser) SyntaxError!Expression {
         // TODO: handle exps (type checking)
         const tok = self.scanner.peek();
         return switch (tok.tokenType) {
@@ -426,7 +422,7 @@ pub const Parser = struct {
     }
 
     // E^8, *, /, %
-    fn parseArithmeticExpressionsLower(self: *Parser) ParseError!Expression {
+    fn parseArithmeticExpressionsLower(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseArrayIndexingAndPrefixExpressions();
 
         var tok = self.scanner.peek();
@@ -450,7 +446,7 @@ pub const Parser = struct {
     }
 
     // E^9, array indexing and ++, --, #
-    fn parseArrayIndexingAndPrefixExpressions(self: *Parser) ParseError!Expression {
+    fn parseArrayIndexingAndPrefixExpressions(self: *Parser) SyntaxError!Expression {
         const exp = try self.parseI();
 
         // TODO:
@@ -461,9 +457,8 @@ pub const Parser = struct {
             switch (tok.tokenType) {
                 tt.INC, tt.DEC => {
                     if (!types.IsNum(exp.expType)) {
-                        self.failedAt = tok;
-                        self.errorMsg = std.fmt.allocPrint(self.alloc, "value of type {s} cannot be incremented or decremented", .{@tagName(exp.expType)}) catch unreachable;
-                        return ParseError.TypeError;
+                        std.log.err("value of type {s} cannot be incremented or decremented", .{@tagName(exp.expType)});
+                        return SyntaxError.TypeError;
                     }
 
                     _ = self.scanner.next();
@@ -481,9 +476,8 @@ pub const Parser = struct {
                     // error message but array of them. The error reporting below therefore can override something.
 
                     if (!types.IsIntegral(indexExp.expType)) {
-                        self.failedAt = tok;
-                        self.errorMsg = std.fmt.allocPrint(self.alloc, "array cannot be index with type {s}", .{@tagName(indexExp.expType)}) catch unreachable;
-                        return ParseError.TypeError;
+                        std.log.err("array cannot be index with type {s}", .{@tagName(indexExp.expType)});
+                        return SyntaxError.TypeError;
                     }
 
                     try self.consume(tt.RBRACK);
@@ -497,7 +491,7 @@ pub const Parser = struct {
         unreachable;
     }
 
-    fn parseI(self: *Parser) ParseError!Expression {
+    fn parseI(self: *Parser) SyntaxError!Expression {
         var tok = self.scanner.next();
 
         // TODO: handle type casting
@@ -556,24 +550,23 @@ pub const Parser = struct {
         unreachable;
     }
 
-    fn consume(self: *Parser, want: tt) ParseError!void {
+    fn consume(self: *Parser, want: tt) SyntaxError!void {
         _ = try self.consumeGet(want);
     }
 
-    fn consumeGet(self: *Parser, want: tt) ParseError!scanner.Token {
+    fn consumeGet(self: *Parser, want: tt) SyntaxError!scanner.Token {
         const next = self.scanner.next();
 
         if (next.tokenType == tt.ILLEGAL) {
             // It does not make sense to report ILLEGAL tokens here since the scanner has already done it.
             // TODO: Remove error reporting from scanner and do it just here for simplicity?
-            return ParseError.UnexpectedToken;
+            return SyntaxError.UnexpectedToken;
         }
 
         if (want != next.tokenType) {
-            self.failedAt = next;
             // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
-            self.errorMsg = std.fmt.allocPrint(self.alloc, "expected '{s}' but found '{s}' instead", .{ tt.str(want), tt.str(next.tokenType) }) catch unreachable;
-            return ParseError.UnexpectedToken;
+            std.log.err("expected '{s}' but found '{s}' instead", .{ tt.str(want), tt.str(next.tokenType) });
+            return SyntaxError.UnexpectedToken;
         }
 
         return next;

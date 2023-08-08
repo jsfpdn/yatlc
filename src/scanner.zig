@@ -97,10 +97,12 @@ pub const Scanner = struct {
             '@' => tok.tokenType = TokenType.AT,
             '#' => tok.tokenType = TokenType.HASH,
             '^' => tok.tokenType = TokenType.XOR,
+            '?' => self.switch2(&tok, '?', TokenType.D_QUESTION_MARK, TokenType.QUESTION_MARK),
             '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
             '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
             '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
+            // TODO: Implement <<=, >>=, &&=, ||=
             '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.LSH, TokenType.LT),
             '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.RSH, TokenType.GT),
             '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
