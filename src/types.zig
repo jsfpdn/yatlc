@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const symbols = @import("symbols.zig");
+
 pub const SimpleType = enum(u8) {
     I32,
     I16,
@@ -38,6 +40,14 @@ pub const SimpleType = enum(u8) {
 
         return null;
     }
+
+    pub fn isType(str: []const u8) bool {
+        if (SimpleType.getType(str)) |_| {
+            return true;
+        }
+
+        return false;
+    }
 };
 
 pub const Array = struct {
@@ -49,23 +59,88 @@ pub const Array = struct {
     }
 };
 
-pub const TypeTag = enum {
+pub const Pointer = struct {
+    toType: *Type = undefined,
+
+    fn destroy(self: *Pointer, alloc: std.mem.Allocator) void {
+        self.*.toType.destroy(alloc);
+    }
+};
+
+pub const Func = struct {
+    retT: *Type,
+    args: std.ArrayList(symbols.Symbol),
+
+    namedParams: bool = false,
+    defined: bool = false,
+
+    pub fn init(alloc: std.mem.Allocator, retT: *Type) Func {
+        return Func{
+            .args = std.ArrayList(symbols.Symbol).init(alloc),
+            .retT = retT,
+        };
+    }
+
+    pub fn destroy(self: *Func, alloc: std.mem.Allocator) void {
+        for (self.args.items) |arg| arg.t.destroy(alloc);
+        self.args.deinit();
+        self.retT.destroy(alloc);
+    }
+};
+
+pub const TypeTag = enum(u8) {
     sType,
     cType,
-    constant,
+    pointer,
+    func,
 };
 
 pub const Type = union(TypeTag) {
     sType: SimpleType,
     cType: Array,
-    constant: i128,
+    pointer: Pointer,
+    func: Func,
 
     pub fn destroy(self: *Type, alloc: std.mem.Allocator) void {
         switch (self.*) {
             TypeTag.cType => |*array| array.destroy(alloc),
-            else => {},
+            TypeTag.pointer => |*pointer| pointer.destroy(alloc),
+            TypeTag.func => |*func| func.destroy(alloc),
+            TypeTag.sType => {},
         }
         alloc.destroy(self);
+    }
+
+    pub fn clone(self: *Type, alloc: std.mem.Allocator) *Type {
+        var t = alloc.create(Type) catch unreachable;
+        switch (self.*) {
+            TypeTag.sType => |simple| {
+                t.* = Type{ .sType = simple };
+                return t;
+            },
+            TypeTag.cType => |array| {
+                var newArray = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) };
+                t.* = Type{ .cType = newArray };
+                return t;
+            },
+            TypeTag.pointer => |pointer| {
+                var newPointer = Pointer{ .toType = pointer.toType.clone(alloc) };
+                t.* = Type{ .pointer = newPointer };
+                return t;
+            },
+            TypeTag.func => |func| {
+                var newFunc = Func{
+                    .retT = func.retT.clone(alloc),
+                    .namedParams = func.namedParams,
+                    .defined = func.defined,
+                    .args = std.ArrayList(symbols.Symbol).initCapacity(alloc, func.args.items.len) catch unreachable,
+                };
+                for (func.args.items) |arg| newFunc.args.append(arg.clone(alloc)) catch unreachable;
+
+                t.* = Type{ .func = newFunc };
+                return t;
+            },
+        }
     }
 };
 
@@ -78,8 +153,8 @@ pub fn IsIntegral(t: Type) bool {
                 else => return false,
             }
         },
+        else => return false,
     }
-    unreachable;
 }
 
 pub fn IsNum(t: Type) bool {
@@ -108,4 +183,16 @@ test "array type does not leak memory" {
     } };
 
     defer t.destroy(std.testing.allocator);
+}
+
+test "pointer type does not leak memory" {
+    var innerT = try std.testing.allocator.create(Type);
+    innerT.* = Type{ .sType = SimpleType.I8 };
+
+    var ptr = try std.testing.allocator.create(Type);
+    ptr.* = Type{ .pointer = Pointer{
+        .toType = innerT,
+    } };
+
+    defer ptr.destroy(std.testing.allocator);
 }

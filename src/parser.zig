@@ -4,13 +4,9 @@ const types = @import("types.zig");
 const scanner = @import("scanner.zig");
 const token = @import("token.zig");
 const reporter = @import("reporter.zig");
+const symbols = @import("symbols.zig");
 
 const tt = token.TokenType;
-
-pub const Arg = struct {
-    ident: token.Token,
-    identType: tt,
-};
 
 pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory };
 
@@ -40,6 +36,8 @@ pub const Parser = struct {
     // errs describes the set of errors encountered during parsing.
     errs: std.ArrayList(ErrorInfo),
 
+    st: symbols.SymbolTable,
+
     // TODO:
     // * IR emitter
     // * analysis: main is defined (with correct arguments)
@@ -52,31 +50,121 @@ pub const Parser = struct {
             .rep = r,
             .alloc = alloc,
             .errs = std.ArrayList(ErrorInfo).init(alloc),
+            .st = symbols.SymbolTable.init(alloc),
         };
     }
 
     pub fn deinit(self: *Parser) void {
         self.errs.deinit();
+        self.st.deinit();
     }
 
-    pub fn parse(self: *Parser) void {
+    pub fn parse(self: *Parser) !void {
+        // Open the global scope.
+        try self.st.open();
+
         while (self.scanner.peek().tokenType != tt.EOF) {
             self.parseTopLevelStatement() catch {
                 // std.log.err("{d}:{d}: {s}", .{ self.failedAt.?.sourceLoc.line, self.failedAt.?.sourceLoc.column, self.errorMsg.? });
             };
         }
+
         // TODO: check for main etc.
     }
 
-    fn parseTopLevelStatement(self: *Parser) !void {
+    fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
         // 1) global variable definition: <type> <ident> = <expr>;
         // 2) (forward) function declaration: <type> <ident>(<arglist>);
         // 3) function definition: <type> <ident>(<arglist>) <body>
         const t = try self.parseType();
-        _ = t;
-
         const ident = try self.consumeGet(tt.IDENT);
-        _ = ident;
+
+        var next = self.scanner.next();
+        switch (next.tokenType) {
+            tt.ASSIGN => {
+                // TODO: self.parseExpression()?
+            },
+            tt.LPAREN => {
+                var ft = try self.alloc.create(types.Type);
+                var func = types.Func.init(self.alloc, t);
+                errdefer func.destroy(self.alloc);
+                func.args = try self.parseArgList(func.args);
+                ft.* = types.Type{ .func = func };
+
+                // TODO: allow defining a function that has been declared before.
+                self.st.insert(symbols.Symbol{
+                    .name = ident.symbol,
+                    .llvmName = "TODO",
+                    .location = ident,
+                    .t = ft,
+                }) catch |err| switch (err) {
+                    symbols.SymbolError.SymbolAlreadyExists => {
+                        // TODO: log error that a function with the same name already exists.
+                    },
+                    symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
+                };
+
+                next = self.scanner.peek();
+                if (next.tokenType == tt.LBRACE) {
+                    // Open a new scope just for the function arguments. This way,
+                    // arguments can be shadowed in the function body.
+                    try self.st.open();
+
+                    for (func.args.items) |arg| self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
+                        symbols.SymbolError.SymbolAlreadyExists => @panic("ICE: symbol cannot already exist since the scope was just opened"),
+                        symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
+                    };
+
+                    try self.parseBody();
+                    // Close the scope just for the function arguments.
+                    self.st.close();
+
+                    func.defined = true;
+                } else {
+                    try self.consume(tt.SEMICOLON);
+                }
+            },
+            else => {
+                t.destroy(self.alloc);
+                self.errs.append(ErrorInfo{ .failedAt = next, .msg = "TODO", .recoverable = false }) catch unreachable;
+                return SyntaxError.UnexpectedToken;
+            },
+        }
+    }
+
+    fn parseArgList(self: *Parser, argList: std.ArrayList(symbols.Symbol)) SyntaxError!std.ArrayList(symbols.Symbol) {
+        // LPAREN is already consumed, scanner must point to the type of the first argument.
+        // TODO: implement not named arguments.
+        var expectComma = false;
+        var next = self.scanner.peek();
+
+        var args = argList;
+        while (next.tokenType != tt.RPAREN) {
+            if (expectComma) try self.consume(tt.COMMA);
+
+            const t = try self.parseType();
+            errdefer t.destroy(self.alloc);
+
+            const id = try self.consumeGet(tt.IDENT);
+
+            if (types.SimpleType.isType(id.symbol)) {
+                self.errs.append(ErrorInfo{ .failedAt = next, .msg = "TODO: parameter must not be named as type", .recoverable = true }) catch unreachable;
+            } else {
+                // TODO: check for arguments with the same name.
+                try args.append(symbols.Symbol{
+                    .name = id.symbol,
+                    .llvmName = "TODO",
+                    .location = id, // TODO: should it be the identifier or it's type?
+                    .t = t,
+                });
+            }
+
+            expectComma = true;
+            next = self.scanner.peek();
+        }
+
+        self.consume(tt.RPAREN) catch unreachable;
+        return args;
     }
 
     pub fn parseType(self: *Parser) SyntaxError!*types.Type {
@@ -111,30 +199,6 @@ pub const Parser = struct {
                 return SyntaxError.UnexpectedToken;
             },
         };
-    }
-
-    fn parseVariableDeclaration(self: *Parser) SyntaxError!void {
-        // `i32 asd;`, `i32 asd = 123;`
-        _ = self;
-    }
-
-    fn parseVariableAssignment(self: *Parser) SyntaxError!void {
-        // `asd = return_i32();` should all work.
-        // TODO: type checking
-
-        const lhs = try self.consumeGet(tt.IDENT);
-        _ = lhs;
-
-        const assignOp = self.scanner.next();
-        if (!tt.isAssignment(assignOp.tokenType)) {
-            std.log.err("expected variable assignment, found {s}", .{@tagName(assignOp.tokenType)});
-            return SyntaxError.UnexpectedToken;
-        }
-
-        const rhs = try self.parseExpression();
-        _ = rhs;
-
-        try self.consume(tt.SEMICOLON);
     }
 
     // E
@@ -239,50 +303,6 @@ pub const Parser = struct {
         // TODO: check that the continue_stack is not empty (=> there's something to continue in)
         self.consume(tt.CONTINUE) catch unreachable;
         // TODO: semicolon magic here.
-    }
-
-    fn parseArgList(self: *Parser) !std.ArrayList(Arg) {
-        var tok = self.scanner.next();
-        if (tok.tokenType != tt.LPAREN) {
-            std.log.err("expected '(' but found {s}", .{@tagName(tok.tokenType)});
-            return error.ExpectedLPAREN;
-        }
-
-        var args = std.ArrayList(Arg).init(self.alloc);
-        var expectComma = false;
-
-        while (true) {
-            var nextTok = self.scanner.next();
-            if (nextTok.tokenType == tt.RPAREN) {
-                break;
-            }
-
-            if (expectComma) {
-                if (nextTok.tokenType != tt.COMMA) {
-                    std.log.err("expected ',' but got {s}", .{@tagName(nextTok.tokenType)});
-                    return error.ExpectedComma;
-                }
-
-                // Jump to the next token.
-                nextTok = self.scanner.next();
-            }
-
-            if (nextTok.tokenType != tt.IDENT) {
-                std.log.err("expected IDENT but got {s}", .{@tagName(nextTok.tokenType)});
-                return error.ExpectedIdentifier;
-            }
-
-            const identType = self.scanner.next();
-            _ = types.SimpleType.getType(identType.symbol) orelse {
-                std.log.err("expected type but got {s}", .{@tagName(identType.tokenType)});
-                return error.ExpectedIdentifierType;
-            };
-
-            args.append(Arg{ .ident = nextTok, .identType = identType.tokenType }) catch unreachable;
-            expectComma = true;
-        }
-
-        return args;
     }
 
     // E^1
@@ -499,7 +519,7 @@ pub const Parser = struct {
         switch (tok.tokenType) {
             tt.LPAREN => {
                 const exp = try self.parseExpression();
-                try self.consume(tt.LPAREN);
+                try self.consume(tt.RPAREN);
                 return exp;
             },
             tt.IDENT => {

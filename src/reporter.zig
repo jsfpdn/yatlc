@@ -41,9 +41,6 @@ pub const Reporter = struct {
 
         self.pad(' ', 4 + tok.bufferLoc.start - loc.start);
         self.writer.print("^", .{}) catch unreachable;
-
-        self.pad(' ', 4 + tok.bufferLoc.start - loc.start);
-        self.writer.print("|- Note: invalid token starts here\n\n", .{}) catch unreachable;
     }
 
     /// line returns the beginning and end of the line where the token resides.

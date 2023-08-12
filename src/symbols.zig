@@ -7,10 +7,23 @@ const types = @import("types.zig");
 pub const SymbolError = error{ SymbolAlreadyExists, OutOfMemory };
 
 pub const Symbol = struct {
-    // TODO: information about functions
-    name: [:0]const u8,
+    name: []const u8 = "",
+    llvmName: []const u8 = "",
     location: tokens.Token = undefined,
-    t: types.Type = undefined,
+    t: *types.Type,
+
+    pub fn destroy(self: Symbol, alloc: std.mem.Allocator) void {
+        self.t.destroy(alloc);
+    }
+
+    pub fn clone(self: Symbol, alloc: std.mem.Allocator) Symbol {
+        return Symbol{
+            .name = self.name,
+            .llvmName = self.llvmName,
+            .location = self.location,
+            .t = self.t.clone(alloc),
+        };
+    }
 };
 
 pub const SymbolTable = struct {
@@ -27,13 +40,18 @@ pub const SymbolTable = struct {
     /// deinit all the open scopes and all the supporting data structures
     pub fn deinit(self: *SymbolTable) void {
         for (self.scopeStack.items) |*scope| {
+            var valIt = scope.valueIterator();
+            while (valIt.next()) |symbol| {
+                symbol.destroy(self.alloc);
+            }
+
             scope.deinit();
         }
         self.scopeStack.deinit();
     }
 
     /// open a new scope
-    pub fn open(self: *SymbolTable) SymbolError!void {
+    pub fn open(self: *SymbolTable) !void {
         var scope: std.StringHashMap(Symbol) = std.StringHashMap(Symbol).init(self.alloc);
         try self.scopeStack.append(scope);
     }
@@ -45,6 +63,11 @@ pub const SymbolTable = struct {
         }
 
         var scope = self.scopeStack.pop();
+        var valIt = scope.valueIterator();
+        while (valIt.next()) |symbol| {
+            symbol.destroy(self.alloc);
+        }
+
         scope.deinit();
     }
 
@@ -84,14 +107,15 @@ test "get on empty SymbolTable does not fail" {
 }
 
 test "basic SymbolTable usage" {
+    const pt = @import("parser_test.zig");
+
     var st = SymbolTable.init(std.testing.allocator);
     defer st.deinit();
 
     try st.open();
-    defer st.close();
 
     // Insert symbol and look it up.
-    try st.insert(Symbol{ .name = "var1" });
+    try st.insert(Symbol{ .name = "var1", .t = pt.createSimpleType(types.SimpleType.U8, std.testing.allocator) });
     try std.testing.expectEqual(st.get("var1").?.name, "var1");
 
     // Creating new scope does not hide symbol in already existing scopes.
@@ -99,10 +123,12 @@ test "basic SymbolTable usage" {
     try std.testing.expectEqual(st.get("var1").?.name, "var1");
 
     // Add symbol to the innermost scope.
-    try st.insert(Symbol{ .name = "var2" });
+    try st.insert(Symbol{ .name = "var2", .t = pt.createSimpleType(types.SimpleType.U8, std.testing.allocator) });
     try std.testing.expectEqual(st.get("var2").?.name, "var2");
 
     // Closing the scope destroys the symbol.
     st.close();
     try std.testing.expectEqual(st.get("var2"), null);
+
+    st.close();
 }

@@ -82,7 +82,9 @@ pub fn main() !void {
     var s = scanner.Scanner.init(contents, w);
     var p = parser.Parser.init(s, r, allocator);
 
-    p.parse();
+    p.parse() catch |err| {
+        fatal("could not compile: {s}", .{@errorName(err)});
+    };
 }
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {
