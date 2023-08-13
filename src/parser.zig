@@ -41,7 +41,6 @@ pub const Parser = struct {
     // TODO:
     // * IR emitter
     // * analysis: main is defined (with correct arguments)
-    // * should we build explicit trees when parsing expressions?
     // * zero-initialized variables?
 
     pub fn init(s: scanner.Scanner, r: ?reporter.Reporter, alloc: std.mem.Allocator) Parser {
@@ -70,6 +69,7 @@ pub const Parser = struct {
         }
 
         // TODO: check for main etc.
+        self.st.close();
     }
 
     fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
@@ -85,32 +85,26 @@ pub const Parser = struct {
                 // TODO: self.parseExpression()?
             },
             tt.LPAREN => {
-                var ft = try self.alloc.create(types.Type);
-                var func = types.Func.init(self.alloc, t);
-                errdefer func.destroy(self.alloc);
-                func.args = try self.parseArgList(func.args);
-                ft.* = types.Type{ .func = func };
+                var ft = self.alloc.create(types.Type) catch unreachable;
+                ft.* = types.Type{ .func = types.Func.init(self.alloc, t) };
+                errdefer ft.destroy(self.alloc);
+                ft.func.args = try self.parseArgList();
 
-                // TODO: allow defining a function that has been declared before.
-                self.st.insert(symbols.Symbol{
+                var fs = symbols.Symbol{
                     .name = ident.symbol,
                     .llvmName = "TODO",
                     .location = ident,
                     .t = ft,
-                }) catch |err| switch (err) {
-                    symbols.SymbolError.SymbolAlreadyExists => {
-                        // TODO: log error that a function with the same name already exists.
-                    },
-                    symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
                 };
 
+                // Try to parse the function body if it is a function definition.
                 next = self.scanner.peek();
                 if (next.tokenType == tt.LBRACE) {
                     // Open a new scope just for the function arguments. This way,
                     // arguments can be shadowed in the function body.
                     try self.st.open();
 
-                    for (func.args.items) |arg| self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
+                    for (fs.t.func.args.items) |arg| self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
                         symbols.SymbolError.SymbolAlreadyExists => @panic("ICE: symbol cannot already exist since the scope was just opened"),
                         symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
                     };
@@ -119,9 +113,42 @@ pub const Parser = struct {
                     // Close the scope just for the function arguments.
                     self.st.close();
 
-                    func.defined = true;
+                    fs.t.func.defined = true;
                 } else {
                     try self.consume(tt.SEMICOLON);
+                }
+
+                // Check that if there's a symbol with the same name, it must be a function with identical
+                // argument types that has been declared but not defined yet.
+                if (self.st.get(ident.symbol)) |s| {
+                    switch (s.t.*) {
+                        types.TypeTag.func => |otherFunc| {
+                            ft.func.defines(otherFunc) catch |err| {
+                                switch (err) {
+                                    // TODO: Utilize error reporter here. All messages are errors, not warnings.
+                                    types.Func.DefinitionErrors.ArgsNotNamed => std.log.err("function definition must have named arguments", .{}),
+                                    types.Func.DefinitionErrors.AlreadyDefined => std.log.err("function tries to redefine an already defined function", .{}),
+                                    types.Func.DefinitionErrors.ArgTypeMismatch => std.log.err("function definition does not match its declaration", .{}),
+                                }
+
+                                // TODO: Return better error? We need to return with error
+                                // in order to destroy all the data structures.
+                                return SyntaxError.TypeError;
+                            };
+
+                            // Upsert the declared function with it's definition in the symbol table.
+                            self.st.upsert(fs);
+                        },
+                        else => {
+                            std.log.err("function shadows global variable", .{});
+                            // TODO: Return better error? We need to return with error
+                            // in order to destroy all the data structures.
+                            return SyntaxError.TypeError;
+                        },
+                    }
+                } else {
+                    // SymbolAlreadyExists cannot occur since we check it above^.
+                    self.st.insert(fs) catch unreachable;
                 }
             },
             else => {
@@ -132,31 +159,40 @@ pub const Parser = struct {
         }
     }
 
-    fn parseArgList(self: *Parser, argList: std.ArrayList(symbols.Symbol)) SyntaxError!std.ArrayList(symbols.Symbol) {
+    fn parseArgList(self: *Parser) SyntaxError!std.ArrayList(symbols.Symbol) {
         // LPAREN is already consumed, scanner must point to the type of the first argument.
-        // TODO: implement not named arguments.
         var expectComma = false;
         var next = self.scanner.peek();
 
-        var args = argList;
+        const argNamesE = enum { DoNotKnow, Named, Unnamed };
+        var argNames = argNamesE.DoNotKnow;
+
+        var args = std.ArrayList(symbols.Symbol).init(self.alloc);
         while (next.tokenType != tt.RPAREN) {
             if (expectComma) try self.consume(tt.COMMA);
 
-            const t = try self.parseType();
-            errdefer t.destroy(self.alloc);
+            var s = symbols.Symbol{
+                .t = try self.parseType(),
+            };
 
-            const id = try self.consumeGet(tt.IDENT);
+            errdefer s.t.destroy(self.alloc);
+            if (argNames == argNamesE.Unnamed or
+                ((self.scanner.peek().tokenType == tt.COMMA or self.scanner.peek().tokenType == tt.RPAREN) and argNames == argNamesE.DoNotKnow))
+            {
+                argNames = argNamesE.Unnamed;
+                s.location = undefined;
+            } else {
+                argNames = argNamesE.Named;
+                const id = try self.consumeGet(tt.IDENT);
+                s.name = id.symbol;
+                s.llvmName = "TODO";
+                s.location = id;
+            }
 
-            if (types.SimpleType.isType(id.symbol)) {
+            if (std.mem.eql(u8, s.name, "") and types.SimpleType.isType(s.name)) {
                 self.errs.append(ErrorInfo{ .failedAt = next, .msg = "TODO: parameter must not be named as type", .recoverable = true }) catch unreachable;
             } else {
-                // TODO: check for arguments with the same name.
-                try args.append(symbols.Symbol{
-                    .name = id.symbol,
-                    .llvmName = "TODO",
-                    .location = id, // TODO: should it be the identifier or it's type?
-                    .t = t,
-                });
+                try args.append(s);
             }
 
             expectComma = true;

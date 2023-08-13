@@ -120,6 +120,30 @@ test "parse correct top level statement" {
     }
 }
 
+test "parse function definition after declaration" {
+    const testCase = struct {
+        input: [:0]const u8,
+    };
+
+    const cases = [_]testCase{
+        // TODO: test errors.
+        .{ .input = "u32 testFunc(); u32 testFunc(){}" },
+        .{ .input = "u32 testFunc(i32); u32 testFunc(i32 a){}" },
+        .{ .input = "[-]u32 testFunc([-,-]u32, i32); [-]u32 testFunc([-,-]u32 a, i32 b){}" },
+    };
+
+    for (cases) |tc| {
+        var s = scanner.Scanner.init(tc.input, null);
+        var p = parser.Parser.init(s, null, std.testing.allocator);
+        // parser must be `errdefer`-ed in case an error occurs.
+        errdefer p.deinit();
+
+        try p.parse();
+
+        p.deinit();
+    }
+}
+
 const testErrors = error{ExpectedEqual};
 
 fn expectEqualDeep(want: *types.Type, got: *types.Type) testErrors!void {

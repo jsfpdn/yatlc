@@ -3,9 +3,11 @@ const std = @import("std");
 const symbols = @import("symbols.zig");
 
 pub const SimpleType = enum(u8) {
+    I64,
     I32,
     I16,
     I8,
+    U64,
     U32,
     U16,
     U8,
@@ -17,9 +19,11 @@ pub const SimpleType = enum(u8) {
     UNIT,
 
     const SimpleTypeTable = [@typeInfo(SimpleType).Enum.fields.len][:0]const u8{
+        "i64",
         "i32",
         "i16",
         "i8",
+        "u64",
         "u32",
         "u16",
         "u8",
@@ -75,16 +79,46 @@ pub const Func = struct {
     defined: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, retT: *Type) Func {
-        return Func{
+        var func = Func{
             .args = std.ArrayList(symbols.Symbol).init(alloc),
             .retT = retT,
         };
+
+        if (func.args.items.len == 0) {
+            func.namedParams = true;
+        } else {
+            for (func.args.items) |arg| {
+                if (std.mem.eql(u8, arg.name, "")) {
+                    func.namedParams = false;
+                }
+            }
+        }
+
+        return func;
     }
 
     pub fn destroy(self: *Func, alloc: std.mem.Allocator) void {
         for (self.args.items) |arg| arg.t.destroy(alloc);
         self.args.deinit();
         self.retT.destroy(alloc);
+    }
+
+    pub const DefinitionErrors = error{ AlreadyDefined, ArgsNotNamed, ArgTypeMismatch };
+
+    /// defines checks whether the receiver struct `self` is a valid definition of an already
+    /// declared function `func`.
+    pub fn defines(self: *Func, funcDecl: Func) DefinitionErrors!void {
+        // Self cannot define `func` if `func` is already defined.
+        if (funcDecl.defined) return DefinitionErrors.AlreadyDefined;
+        // Self cannot define anything if parameters are not named.
+        if (!self.namedParams) return DefinitionErrors.ArgsNotNamed;
+
+        for (0..self.args.items.len) |i| {
+            if (!self.args.items[i].t.equals(funcDecl.args.items[i].t)) {
+                // TODO: Ideally inform what the mismatch is and where it happened.
+                return DefinitionErrors.ArgTypeMismatch;
+            }
+        }
     }
 };
 
@@ -113,22 +147,11 @@ pub const Type = union(TypeTag) {
 
     pub fn clone(self: *Type, alloc: std.mem.Allocator) *Type {
         var t = alloc.create(Type) catch unreachable;
-        switch (self.*) {
-            TypeTag.sType => |simple| {
-                t.* = Type{ .sType = simple };
-                return t;
-            },
-            TypeTag.cType => |array| {
-                var newArray = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) };
-                t.* = Type{ .cType = newArray };
-                return t;
-            },
-            TypeTag.pointer => |pointer| {
-                var newPointer = Pointer{ .toType = pointer.toType.clone(alloc) };
-                t.* = Type{ .pointer = newPointer };
-                return t;
-            },
-            TypeTag.func => |func| {
+        t.* = switch (self.*) {
+            TypeTag.sType => |simple| Type{ .sType = simple },
+            TypeTag.cType => |array| Type{ .cType = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
+            TypeTag.pointer => |pointer| Type{ .pointer = Pointer{ .toType = pointer.toType.clone(alloc) } },
+            TypeTag.func => |func| blk: {
                 var newFunc = Func{
                     .retT = func.retT.clone(alloc),
                     .namedParams = func.namedParams,
@@ -137,10 +160,29 @@ pub const Type = union(TypeTag) {
                 };
                 for (func.args.items) |arg| newFunc.args.append(arg.clone(alloc)) catch unreachable;
 
-                t.* = Type{ .func = newFunc };
-                return t;
+                break :blk Type{ .func = newFunc };
             },
-        }
+        };
+        return t;
+    }
+
+    pub fn equals(self: *Type, other: *Type) bool {
+        if (@intFromEnum(self.*) != @intFromEnum(other.*)) return false;
+
+        return switch (self.*) {
+            TypeTag.sType => |selfSimple| selfSimple == other.sType,
+            TypeTag.pointer => |selfPointer| selfPointer.toType.equals(other.pointer.toType),
+            TypeTag.func => |selfFunc| blk: {
+                if (selfFunc.args.items.len != other.func.args.items.len or selfFunc.defined != other.func.defined or selfFunc.namedParams != other.func.namedParams or !selfFunc.retT.equals(other.func.retT))
+                    break :blk false;
+                for (0..selfFunc.args.items.len) |i| {
+                    if (!selfFunc.args.items[i].t.equals(other.func.args.items[i].t))
+                        break :blk false;
+                }
+                break :blk true;
+            },
+            TypeTag.cType => |selfArray| selfArray.dimensions == other.cType.dimensions and selfArray.ofType.equals(other.cType.ofType),
+        };
     }
 };
 
@@ -149,7 +191,7 @@ pub fn IsIntegral(t: Type) bool {
         Type.cType => return false,
         Type.sType => {
             switch (t.sType) {
-                SimpleType.I32, SimpleType.I16, SimpleType.U32, SimpleType.U16 => return true,
+                SimpleType.I64, SimpleType.I32, SimpleType.I16, SimpleType.U64, SimpleType.U32, SimpleType.U16 => return true,
                 else => return false,
             }
         },

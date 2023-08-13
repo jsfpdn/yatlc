@@ -83,7 +83,17 @@ pub const SymbolTable = struct {
             return SymbolError.SymbolAlreadyExists;
         }
 
-        try activeScope.put(symbol.name, symbol);
+        activeScope.put(symbol.name, symbol) catch unreachable;
+    }
+
+    pub fn upsert(self: *SymbolTable, symbol: Symbol) void {
+        if (self.scopeStack.items.len == 0) {
+            @panic("ICE: tried to insert symbol when no scope is open");
+        }
+
+        var activeScope = &self.scopeStack.items[self.scopeStack.items.len - 1];
+        if (activeScope.fetchRemove(symbol.name)) |kv| kv.value.destroy(self.alloc);
+        activeScope.put(symbol.name, symbol) catch unreachable;
     }
 
     /// get symbol. Search for the symbol starts at the innermost scope towards the outermost scope.
