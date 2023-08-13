@@ -40,11 +40,17 @@ pub fn main() !void {
     };
     defer process.argsFree(allocator, args);
 
-    if (args.len < 2) {
-        fatal("received too few arguments", .{});
+    if (args.len < 1) {
+        fatalHelp("received too few arguments", .{});
     }
 
     var opts = options{};
+    for (args[1..]) |arg| {
+        if (argSet(arg, "-h", "--help")) {
+            return io.getStdOut().writeAll(usage);
+        }
+    }
+
     for (args[2..]) |arg| {
         if (argSet(arg, "-h", "--help")) {
             return io.getStdOut().writeAll(usage);
@@ -55,6 +61,10 @@ pub fn main() !void {
         } else {
             fatal("unrecognized option {s}", .{arg});
         }
+    }
+
+    if (args.len < 2) {
+        fatalHelp("received too few arguments", .{});
     }
 
     const filename = args[1];
@@ -81,6 +91,7 @@ pub fn main() !void {
     var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, w);
     var p = parser.Parser.init(s, r, allocator);
+    defer p.deinit();
 
     p.parse() catch |err| {
         fatal("could not compile: {s}", .{@errorName(err)});
@@ -89,6 +100,12 @@ pub fn main() !void {
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {
     std.log.err(format, args);
+    process.exit(1);
+}
+
+pub fn fatalHelp(comptime format: []const u8, args: anytype) noreturn {
+    std.log.err(format, args);
+    io.getStdOut().writeAll(usage) catch unreachable;
     process.exit(1);
 }
 

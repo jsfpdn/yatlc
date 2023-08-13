@@ -1,0 +1,9 @@
+// Showcases error reporting and error recovery of yatlc.
+
+i32 funcTypeMismatch(i32, u32, [-]u32);
+i32 funcTypeMismatch(u32 a, u32 b, [-]u32 arr) {}
+
+i32 funcArgsUnnamed(u32, u32, [-]u32) {}
+
+unit funcRedefined() {}
+unit funcRedefined() {}

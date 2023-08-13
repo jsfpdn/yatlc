@@ -68,7 +68,7 @@ pub const Scanner = struct {
 
         var tok = Token{
             .tokenType = TokenType.ILLEGAL,
-            .bufferLoc = Token.BufferLoc{ .start = self.offset, .end = self.offset },
+            .bufferLoc = token.BufferLoc{ .start = self.offset, .end = self.offset },
             .sourceLoc = Token.SourceLoc{ .line = self.lineOffset, .column = self.charOffset },
             .symbol = "",
         };

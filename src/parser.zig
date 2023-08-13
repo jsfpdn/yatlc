@@ -10,16 +10,9 @@ const tt = token.TokenType;
 
 pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory };
 
-pub const ErrorInfo = struct {
-    failedAt: token.Token,
-    msg: [:0]const u8,
-    recoverable: bool = false,
-};
-
 pub const Expression = struct {
     // expType denotes the type of the result of this expression.
     // token.TokenType.isType(this) must always evaluate to true.
-    // TODO: refactor types to standalone module?
     expType: types.Type,
 
     // callsFunction denotes whether there is a function call in the expression somewhere.
@@ -33,9 +26,6 @@ pub const Parser = struct {
 
     alloc: std.mem.Allocator,
 
-    // errs describes the set of errors encountered during parsing.
-    errs: std.ArrayList(ErrorInfo),
-
     st: symbols.SymbolTable,
 
     // TODO:
@@ -48,13 +38,11 @@ pub const Parser = struct {
             .scanner = s,
             .rep = r,
             .alloc = alloc,
-            .errs = std.ArrayList(ErrorInfo).init(alloc),
             .st = symbols.SymbolTable.init(alloc),
         };
     }
 
     pub fn deinit(self: *Parser) void {
-        self.errs.deinit();
         self.st.deinit();
     }
 
@@ -62,10 +50,11 @@ pub const Parser = struct {
         // Open the global scope.
         try self.st.open();
 
-        while (self.scanner.peek().tokenType != tt.EOF) {
-            self.parseTopLevelStatement() catch {
-                // std.log.err("{d}:{d}: {s}", .{ self.failedAt.?.sourceLoc.line, self.failedAt.?.sourceLoc.column, self.errorMsg.? });
-            };
+        var next = self.scanner.peek();
+        while (next.tokenType != tt.EOF) {
+            if (next.tokenType == tt.COMMENT) self.consume(tt.COMMENT) catch unreachable;
+            self.parseTopLevelStatement() catch {};
+            next = self.scanner.peek();
         }
 
         // TODO: check for main etc.
@@ -104,10 +93,18 @@ pub const Parser = struct {
                     // arguments can be shadowed in the function body.
                     try self.st.open();
 
-                    for (fs.t.func.args.items) |arg| self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
-                        symbols.SymbolError.SymbolAlreadyExists => @panic("ICE: symbol cannot already exist since the scope was just opened"),
-                        symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
-                    };
+                    fs.t.func.namedParams = true;
+                    for (fs.t.func.args.items) |arg| {
+                        if (std.mem.eql(u8, arg.name, "")) {
+                            // TODO: do not emit IR since argument is not named.
+                            if (fs.t.func.namedParams)
+                                self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name});
+                            fs.t.func.namedParams = false;
+                        } else self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
+                            symbols.SymbolError.SymbolAlreadyExists => @panic("ICE: symbol cannot already exist since the scope was just opened"),
+                            symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
+                        };
+                    }
 
                     try self.parseBody();
                     // Close the scope just for the function arguments.
@@ -125,10 +122,15 @@ pub const Parser = struct {
                         types.TypeTag.func => |otherFunc| {
                             ft.func.defines(otherFunc) catch |err| {
                                 switch (err) {
-                                    // TODO: Utilize error reporter here. All messages are errors, not warnings.
-                                    types.Func.DefinitionErrors.ArgsNotNamed => std.log.err("function definition must have named arguments", .{}),
-                                    types.Func.DefinitionErrors.AlreadyDefined => std.log.err("function tries to redefine an already defined function", .{}),
-                                    types.Func.DefinitionErrors.ArgTypeMismatch => std.log.err("function definition does not match its declaration", .{}),
+                                    types.Func.DefinitionErrors.AlreadyDefined => {
+                                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
+                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
+                                    },
+                                    types.Func.DefinitionErrors.ArgTypeMismatch => {
+                                        self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name});
+                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first declared here", .{fs.name});
+                                        // TODO: Make error reporting better - show where the mismatch is.
+                                    },
                                 }
 
                                 // TODO: Return better error? We need to return with error
@@ -140,7 +142,7 @@ pub const Parser = struct {
                             self.st.upsert(fs);
                         },
                         else => {
-                            std.log.err("function shadows global variable", .{});
+                            self.report(fs.location, reporter.Level.ERROR, "function '{s}' shadows global variable", .{fs.name});
                             // TODO: Return better error? We need to return with error
                             // in order to destroy all the data structures.
                             return SyntaxError.TypeError;
@@ -153,7 +155,7 @@ pub const Parser = struct {
             },
             else => {
                 t.destroy(self.alloc);
-                self.errs.append(ErrorInfo{ .failedAt = next, .msg = "TODO", .recoverable = false }) catch unreachable;
+                self.report(next, reporter.Level.ERROR, "expected either function declaration, definition or global variable definiton", .{});
                 return SyntaxError.UnexpectedToken;
             },
         }
@@ -190,7 +192,8 @@ pub const Parser = struct {
             }
 
             if (std.mem.eql(u8, s.name, "") and types.SimpleType.isType(s.name)) {
-                self.errs.append(ErrorInfo{ .failedAt = next, .msg = "TODO: parameter must not be named as type", .recoverable = true }) catch unreachable;
+                // TODO: stop emitting IR.
+                self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{});
             } else {
                 try args.append(s);
             }
@@ -214,7 +217,7 @@ pub const Parser = struct {
                 tp.* = types.Type{ .sType = t };
                 return tp;
             } else {
-                self.errs.append(ErrorInfo{ .failedAt = tok, .msg = "TODO", .recoverable = true }) catch unreachable;
+                self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol});
                 return SyntaxError.UnexpectedToken;
             },
             tt.LBRACK => {
@@ -231,7 +234,7 @@ pub const Parser = struct {
                 return tp;
             },
             else => {
-                self.errs.append(ErrorInfo{ .failedAt = tok, .msg = "TODO", .recoverable = true }) catch unreachable;
+                self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol});
                 return SyntaxError.UnexpectedToken;
             },
         };
@@ -621,10 +624,18 @@ pub const Parser = struct {
 
         if (want != next.tokenType) {
             // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
-            std.log.err("expected '{s}' but found '{s}' instead", .{ tt.str(want), tt.str(next.tokenType) });
+            self.report(next, reporter.Level.ERROR, "expected '{s}' but found '{s}' instead", .{ tt.str(want), next.symbol });
             return SyntaxError.UnexpectedToken;
         }
 
         return next;
+    }
+
+    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype) void {
+        if (self.rep) |rep| {
+            const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
+            defer self.alloc.free(msg);
+            rep.report(tok, level, msg);
+        }
     }
 };

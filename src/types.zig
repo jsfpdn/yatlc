@@ -84,16 +84,6 @@ pub const Func = struct {
             .retT = retT,
         };
 
-        if (func.args.items.len == 0) {
-            func.namedParams = true;
-        } else {
-            for (func.args.items) |arg| {
-                if (std.mem.eql(u8, arg.name, "")) {
-                    func.namedParams = false;
-                }
-            }
-        }
-
         return func;
     }
 
@@ -103,15 +93,13 @@ pub const Func = struct {
         self.retT.destroy(alloc);
     }
 
-    pub const DefinitionErrors = error{ AlreadyDefined, ArgsNotNamed, ArgTypeMismatch };
+    pub const DefinitionErrors = error{ AlreadyDefined, ArgTypeMismatch };
 
     /// defines checks whether the receiver struct `self` is a valid definition of an already
     /// declared function `func`.
     pub fn defines(self: *Func, funcDecl: Func) DefinitionErrors!void {
         // Self cannot define `func` if `func` is already defined.
         if (funcDecl.defined) return DefinitionErrors.AlreadyDefined;
-        // Self cannot define anything if parameters are not named.
-        if (!self.namedParams) return DefinitionErrors.ArgsNotNamed;
 
         for (0..self.args.items.len) |i| {
             if (!self.args.items[i].t.equals(funcDecl.args.items[i].t)) {

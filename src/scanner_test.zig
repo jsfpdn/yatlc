@@ -29,7 +29,7 @@ test "eat EOF" {
     var s = Scanner.init(contents, null);
 
     const tok = s.next();
-    try expectTokensEqual(Token{ .tokenType = TokenType.EOF, .bufferLoc = Token.BufferLoc{ .start = 0, .end = 0 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 1 }, .symbol = "EOF" }, tok);
+    try expectTokensEqual(Token{ .tokenType = TokenType.EOF, .bufferLoc = token.BufferLoc{ .start = 0, .end = 0 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 1 }, .symbol = "EOF" }, tok);
 }
 
 test "OP and OP_ASSIGN tokens with locations" {
@@ -37,11 +37,11 @@ test "OP and OP_ASSIGN tokens with locations" {
     var s = Scanner.init(contents, null);
 
     const cases = [_]Token{
-        Token{ .tokenType = TokenType.ADD_ASSIGN, .bufferLoc = Token.BufferLoc{ .start = 1, .end = 2 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 2 }, .symbol = "+=" },
-        Token{ .tokenType = TokenType.ADD, .bufferLoc = Token.BufferLoc{ .start = 4, .end = 4 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 5 }, .symbol = "+" },
-        Token{ .tokenType = TokenType.SUB_ASSIGN, .bufferLoc = Token.BufferLoc{ .start = 8, .end = 9 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 9 }, .symbol = "-=" },
-        Token{ .tokenType = TokenType.SUB, .bufferLoc = Token.BufferLoc{ .start = 11, .end = 11 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 12 }, .symbol = "-" },
-        Token{ .tokenType = TokenType.EOF, .bufferLoc = Token.BufferLoc{ .start = 12, .end = 12 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 13 }, .symbol = "EOF" },
+        Token{ .tokenType = TokenType.ADD_ASSIGN, .bufferLoc = token.BufferLoc{ .start = 1, .end = 2 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 2 }, .symbol = "+=" },
+        Token{ .tokenType = TokenType.ADD, .bufferLoc = token.BufferLoc{ .start = 4, .end = 4 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 5 }, .symbol = "+" },
+        Token{ .tokenType = TokenType.SUB_ASSIGN, .bufferLoc = token.BufferLoc{ .start = 8, .end = 9 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 9 }, .symbol = "-=" },
+        Token{ .tokenType = TokenType.SUB, .bufferLoc = token.BufferLoc{ .start = 11, .end = 11 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 12 }, .symbol = "-" },
+        Token{ .tokenType = TokenType.EOF, .bufferLoc = token.BufferLoc{ .start = 12, .end = 12 }, .sourceLoc = Token.SourceLoc{ .line = 1, .column = 13 }, .symbol = "EOF" },
     };
 
     var tok: token.Token = undefined;

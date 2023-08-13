@@ -1,16 +1,16 @@
 const std = @import("std");
 const expect = std.testing.expect;
 
+pub const BufferLoc = struct {
+    start: usize,
+    end: usize,
+};
+
 pub const Token = struct {
     tokenType: TokenType,
     bufferLoc: BufferLoc,
     sourceLoc: SourceLoc,
     symbol: []const u8,
-
-    pub const BufferLoc = struct {
-        start: usize,
-        end: usize,
-    };
 
     pub const SourceLoc = struct {
         line: usize,

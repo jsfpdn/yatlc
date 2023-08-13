@@ -3,17 +3,20 @@ const std = @import("std");
 const io = std.io;
 
 const scanner = @import("scanner.zig");
+const token = @import("token.zig");
 
 const Token = scanner.Token;
 
 pub const Level = enum {
     WARNING,
     ERROR,
+    NOTE,
 
     pub fn str(self: Level) [:0]const u8 {
         return switch (self) {
-            Level.WARNING => "warning",
-            Level.ERROR => "error",
+            Level.WARNING => "WARNING",
+            Level.ERROR => "ERROR",
+            Level.NOTE => "NOTE",
         };
     }
 };
@@ -36,16 +39,16 @@ pub const Reporter = struct {
         // TODO(jsfpdn): fix reporting of multiline comments.
         const loc = self.line(tok);
 
-        self.writer.print("{s}:{d}:{d}: {s}: {s}.\n", .{ self.file, tok.sourceLoc.line, tok.sourceLoc.column, level.str(), msg }) catch unreachable;
+        self.writer.print("{s}: {s}:{d}:{d}: {s}.\n", .{ level.str(), self.file, tok.sourceLoc.line, tok.sourceLoc.column, msg }) catch unreachable;
         self.writer.print("    {s}\n", .{self.contents[loc.start..loc.end]}) catch unreachable;
 
         self.pad(' ', 4 + tok.bufferLoc.start - loc.start);
-        self.writer.print("^", .{}) catch unreachable;
+        self.writer.print("^\n", .{}) catch unreachable;
     }
 
     /// line returns the beginning and end of the line where the token resides.
-    fn line(self: *const Reporter, tok: Token) Token.BufferLoc {
-        var loc = Token.BufferLoc{ .start = tok.bufferLoc.start, .end = tok.bufferLoc.end };
+    fn line(self: *const Reporter, tok: Token) token.BufferLoc {
+        var loc = token.BufferLoc{ .start = tok.bufferLoc.start, .end = tok.bufferLoc.end };
 
         // Find beginning of the line.
         while (loc.start >= 1 and self.contents[loc.start - 1] != '\n') {

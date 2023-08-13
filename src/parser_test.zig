@@ -35,7 +35,6 @@ test "parse types" {
         input: [:0]const u8,
         wantType: ?*types.Type = null,
         wantErr: ?parser.SyntaxError = null,
-        wantErrInfo: ?parser.ErrorInfo = null,
     };
 
     const cases = [_]testCase{
@@ -47,22 +46,7 @@ test "parse types" {
         .{ .input = "u8", .wantType = createSimpleType(types.SimpleType.U8, std.testing.allocator) },
         .{ .input = "u16", .wantType = createSimpleType(types.SimpleType.U16, std.testing.allocator) },
         .{ .input = "u32", .wantType = createSimpleType(types.SimpleType.U32, std.testing.allocator) },
-        .{ .input = "nonsenseType", .wantErr = parser.SyntaxError.UnexpectedToken, .wantErrInfo = parser.ErrorInfo{
-            .failedAt = token.Token{
-                .bufferLoc = token.Token.BufferLoc{
-                    .start = 0,
-                    .end = 11,
-                },
-                .sourceLoc = token.Token.SourceLoc{
-                    .line = 1,
-                    .column = 1,
-                },
-                .symbol = "nonsenseType",
-                .tokenType = tt.IDENT,
-            },
-            .msg = "TODO",
-            .recoverable = true,
-        } },
+        .{ .input = "nonsenseType", .wantErr = parser.SyntaxError.UnexpectedToken },
         .{ .input = "[-,-]u32", .wantType = createArrayType(createSimpleType(types.SimpleType.U32, std.testing.allocator), 2, std.testing.allocator) },
         .{ .input = "[-,-,-,-,-]bool", .wantType = createArrayType(createSimpleType(types.SimpleType.BOOL, std.testing.allocator), 5, std.testing.allocator) },
         .{ .input = "[-,-][-,-,-]bool", .wantType = createArrayType(createArrayType(createSimpleType(types.SimpleType.BOOL, std.testing.allocator), 3, std.testing.allocator), 2, std.testing.allocator) },
@@ -80,7 +64,6 @@ test "parse types" {
 
         if (tc.wantErr) |wantErr| {
             try std.testing.expectError(wantErr, p.parseType());
-            try std.testing.expectEqualDeep(tc.wantErrInfo.?, p.errs.pop());
         } else if (tc.wantType) |wantType| {
             const gotType = try p.parseType();
             defer gotType.destroy(std.testing.allocator);
