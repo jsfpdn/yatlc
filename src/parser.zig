@@ -8,12 +8,22 @@ const symbols = @import("symbols.zig");
 
 const tt = token.TokenType;
 
-pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory };
+pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory, RecoverableError };
 
 pub const Expression = struct {
     // expType denotes the type of the result of this expression.
     // token.TokenType.isType(this) must always evaluate to true.
-    expType: types.Type,
+    lType: types.Type = undefined,
+
+    rValue: []const u8 = "",
+    rType: types.Type = undefined,
+
+    hasLValue: bool = false,
+    lValueComputed: bool = false,
+    lValue: []const u8 = "",
+
+    semicolonFollows: bool = true,
+    endsWithReturn: bool = false,
 
     // callsFunction denotes whether there is a function call in the expression somewhere.
     // This is done to restrict function calls in the top-level statements.
@@ -28,6 +38,8 @@ pub const Parser = struct {
 
     st: symbols.SymbolTable,
 
+    emit: bool,
+
     // TODO:
     // * IR emitter
     // * analysis: main is defined (with correct arguments)
@@ -39,6 +51,7 @@ pub const Parser = struct {
             .rep = r,
             .alloc = alloc,
             .st = symbols.SymbolTable.init(alloc),
+            .emit = true,
         };
     }
 
@@ -52,9 +65,25 @@ pub const Parser = struct {
 
         var next = self.scanner.peek();
         while (next.tokenType != tt.EOF) {
-            if (next.tokenType == tt.COMMENT) self.consume(tt.COMMENT) catch unreachable;
-            self.parseTopLevelStatement() catch {};
+            if (next.tokenType == tt.COMMENT) {
+                self.consume(tt.COMMENT) catch unreachable;
+            } else {
+                self.parseTopLevelStatement() catch {};
+            }
             next = self.scanner.peek();
+        }
+
+        // Report any declared but not defined functions.
+        var it = self.st.globalIterator();
+        while (it.next()) |s| {
+            switch (s.t.*) {
+                types.TypeTag.func => |func| {
+                    if (!func.defined) {
+                        self.report(s.location, reporter.Level.ERROR, "function '{s}' is declared but not defined", .{s.name}, true, true);
+                    }
+                },
+                else => {},
+            }
         }
 
         // TODO: check for main etc.
@@ -65,7 +94,7 @@ pub const Parser = struct {
         // 1) global variable definition: <type> <ident> = <expr>;
         // 2) (forward) function declaration: <type> <ident>(<arglist>);
         // 3) function definition: <type> <ident>(<arglist>) <body>
-        const t = try self.parseType();
+        const t = try self.parseType(true);
         const ident = try self.consumeGet(tt.IDENT);
 
         var next = self.scanner.next();
@@ -96,14 +125,23 @@ pub const Parser = struct {
                     fs.t.func.namedParams = true;
                     for (fs.t.func.args.items) |arg| {
                         if (std.mem.eql(u8, arg.name, "")) {
-                            // TODO: do not emit IR since argument is not named.
-                            if (fs.t.func.namedParams)
-                                self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name});
+                            if (fs.t.func.namedParams) {
+                                self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name}, true, true);
+                                self.emit = false;
+                            }
                             fs.t.func.namedParams = false;
-                        } else self.st.insert(arg.clone(self.alloc)) catch |err| switch (err) {
-                            symbols.SymbolError.SymbolAlreadyExists => @panic("ICE: symbol cannot already exist since the scope was just opened"),
-                            symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
-                        };
+                        } else {
+                            var newArg = arg.clone(self.alloc);
+                            self.st.insert(newArg) catch |err| switch (err) {
+                                symbols.SymbolError.SymbolAlreadyExists => {
+                                    self.report(fs.location, reporter.Level.ERROR, "cannot define 2 function arguments with the same name", .{}, true, true);
+                                    self.emit = false;
+                                    // Destroy the new argument immediately since we need to move on with the parsing.
+                                    newArg.destroy(self.alloc);
+                                },
+                                symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
+                            };
+                        }
                     }
 
                     try self.parseBody();
@@ -123,15 +161,18 @@ pub const Parser = struct {
                             ft.func.defines(otherFunc) catch |err| {
                                 switch (err) {
                                     types.Func.DefinitionErrors.AlreadyDefined => {
-                                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
-                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
+                                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name}, true, true);
+                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name}, false, false);
+                                        s.t.func.defined = true; // Mark the declared function as defined in order to not emit unrelated error.
                                     },
                                     types.Func.DefinitionErrors.ArgTypeMismatch => {
-                                        self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name});
-                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first declared here", .{fs.name});
+                                        self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name}, true, true);
+                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first declared here", .{fs.name}, false, false);
+                                        s.t.func.defined = true; // Mark the declared function as defined in order to not emit unrelated error.
                                         // TODO: Make error reporting better - show where the mismatch is.
                                     },
                                 }
+                                self.emit = false;
 
                                 // TODO: Return better error? We need to return with error
                                 // in order to destroy all the data structures.
@@ -142,7 +183,8 @@ pub const Parser = struct {
                             self.st.upsert(fs);
                         },
                         else => {
-                            self.report(fs.location, reporter.Level.ERROR, "function '{s}' shadows global variable", .{fs.name});
+                            self.emit = false;
+                            self.report(fs.location, reporter.Level.ERROR, "function '{s}' shadows global variable", .{fs.name}, true, true);
                             // TODO: Return better error? We need to return with error
                             // in order to destroy all the data structures.
                             return SyntaxError.TypeError;
@@ -155,7 +197,9 @@ pub const Parser = struct {
             },
             else => {
                 t.destroy(self.alloc);
-                self.report(next, reporter.Level.ERROR, "expected either function declaration, definition or global variable definiton", .{});
+
+                self.emit = false;
+                self.report(next, reporter.Level.ERROR, "expected either function declaration, definition or global variable definiton", .{}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
         }
@@ -174,7 +218,7 @@ pub const Parser = struct {
             if (expectComma) try self.consume(tt.COMMA);
 
             var s = symbols.Symbol{
-                .t = try self.parseType(),
+                .t = try self.parseType(true),
             };
 
             errdefer s.t.destroy(self.alloc);
@@ -192,8 +236,8 @@ pub const Parser = struct {
             }
 
             if (std.mem.eql(u8, s.name, "") and types.SimpleType.isType(s.name)) {
-                // TODO: stop emitting IR.
-                self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{});
+                self.emit = false;
+                self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{}, true, true);
             } else {
                 try args.append(s);
             }
@@ -206,7 +250,27 @@ pub const Parser = struct {
         return args;
     }
 
-    pub fn parseType(self: *Parser) SyntaxError!*types.Type {
+    /// Tries to parse a type. If a type cannot be parsed, scanner's state is rewinded back
+    /// to the state before parsing.
+    fn tryParseType(self: *Parser, verbose: bool) ?*types.Type {
+        const oldOffset = self.scanner.offset;
+        const oldCharOffset = self.scanner.charOffset;
+        const oldLineOffest = self.scanner.lineOffset;
+        const oldLastToken = self.scanner.lastToken;
+
+        var t = self.parseType(verbose) catch {
+            self.scanner.offset = oldOffset;
+            self.scanner.charOffset = oldCharOffset;
+            self.scanner.lineOffset = oldLineOffest;
+            self.scanner.lastToken = oldLastToken;
+            return null;
+        };
+
+        return t;
+    }
+
+    /// Parses a type. `verbose` argument specifies whether to report an error when parsing the type.
+    pub fn parseType(self: *Parser, verbose: bool) SyntaxError!*types.Type {
         var tok = self.scanner.next();
 
         var tp = try self.alloc.create(types.Type);
@@ -217,7 +281,8 @@ pub const Parser = struct {
                 tp.* = types.Type{ .sType = t };
                 return tp;
             } else {
-                self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol});
+                self.emit = false;
+                if (verbose) self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
             tt.LBRACK => {
@@ -229,12 +294,13 @@ pub const Parser = struct {
                     tok = self.scanner.next();
                     if (tok.tokenType == tt.COMMA) {}
                 }
-                array.ofType = try self.parseType();
+                array.ofType = try self.parseType(true);
                 tp.* = types.Type{ .cType = array };
                 return tp;
             },
             else => {
-                self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol});
+                self.emit = false;
+                if (verbose) self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
         };
@@ -244,9 +310,8 @@ pub const Parser = struct {
     pub fn parseExpression(self: *Parser) SyntaxError!void {
         var tok = self.scanner.peek();
 
-        while (tok.tokenType != tt.EOF) {
+        while (!endParseExpression(tok.tokenType)) {
             switch (tok.tokenType) {
-                tt.RBRACE, tt.RBRACK, tt.RPAREN, tt.COMMA, tt.COLON => break,
                 tt.WHILE => try self.parseWhile(),
                 tt.DO => try self.parseDoWhile(),
                 tt.FOR => try self.parseFor(),
@@ -261,8 +326,16 @@ pub const Parser = struct {
                 },
             }
 
-            tok = self.scanner.next();
+            tok = self.scanner.peek();
         }
+    }
+
+    fn endParseExpression(tokenType: tt) bool {
+        const enders = [_]tt{ tt.EOF, tt.RBRACE, tt.RBRACK, tt.RPAREN, tt.COMMA, tt.COLON };
+
+        for (enders) |ender| if (ender == tokenType) return true;
+
+        return false;
     }
 
     fn parseIf(self: *Parser) SyntaxError!void {
@@ -280,6 +353,8 @@ pub const Parser = struct {
         self.consume(tt.ELSE) catch unreachable;
 
         if (self.scanner.peek().tokenType == tt.IF) {
+            // TODO: take extra care with synthesized arguments here. Check what should happen
+            // if parseI fails.
             _ = try self.parseIf();
         } else {
             try self.parseBody();
@@ -346,11 +421,69 @@ pub const Parser = struct {
 
     // E^1
     fn parseSubExpression(self: *Parser) SyntaxError!Expression {
-        // TODO: implement me.
-        _ = self;
-        return Expression{
-            .expType = types.Type{ .sType = types.SimpleType.CHAR },
-        };
+        var exp = Expression{ .lType = undefined };
+        var decl = true;
+
+        if (self.tryParseType(false)) |t| {
+            // TODO:parseType moves the scanner!!!!
+            // This must not move the scanner and return whatever is under it instead....
+            // TODO: work on this first...
+            const ident = try self.consumeGet(tt.IDENT);
+            // TODO: emit alloca
+            self.st.insert(symbols.Symbol{
+                .name = ident.symbol,
+                .llvmName = "TODO",
+                .location = ident,
+                .t = t,
+            }) catch {
+                self.emit = false;
+                self.report(ident, reporter.Level.ERROR, "'{s}' is already defined in the current scope", .{ident.symbol}, true, true);
+            };
+        } else {
+            // not a type
+            decl = false;
+            exp = try self.parseTernaryExpression();
+        }
+
+        var next = self.scanner.peek();
+
+        if (!token.TokenType.isAssignment(next.tokenType)) return exp;
+        if (decl) next = try self.consumeGet(tt.ASSIGN);
+
+        if (!exp.hasLValue) {
+            self.emit = false;
+            self.report(next, reporter.Level.ERROR, "does not have l-value", .{}, true, true);
+            return SyntaxError.RecoverableError;
+        }
+
+        switch (next.tokenType) {
+            tt.ASSIGN => {
+                const rExp = try self.parseSubExpression();
+                exp.rType = rExp.lType;
+
+                if (exp.lType.equals(types.Type{ .sType = types.SimpleType.UNIT }) and exp.rType.equals(types.Type{ .sType = types.SimpleType.UNIT })) {} else {
+                    // TODO: type conversion goes here: lType and rType
+                }
+
+                // exp.rValue =
+                exp.semicolonFollows = true;
+            },
+            tt.ADD_ASSIGN => {},
+            tt.SUB_ASSIGN => {},
+            tt.MUL_ASSIGN => {},
+            tt.QUO_ASSIGN => {},
+            tt.REM_ASSIGN => {},
+            tt.LSH_ASSIGN => {},
+            tt.RSH_ASSIGN => {},
+            tt.AND_ASSIGN => {},
+            tt.XOR_ASSIGN => {},
+            tt.OR_ASSIGN => {},
+            tt.LAND_ASSIGN => {},
+            tt.LOR_ASSIGN => {},
+            else => @panic("ICE: no other assignments can occur"),
+        }
+
+        return exp;
     }
 
     // E^2
@@ -515,8 +648,9 @@ pub const Parser = struct {
             const tok = self.scanner.peek();
             switch (tok.tokenType) {
                 tt.INC, tt.DEC => {
-                    if (!types.IsNum(exp.expType)) {
-                        std.log.err("value of type {s} cannot be incremented or decremented", .{@tagName(exp.expType)});
+                    if (!types.IsNum(exp.lType)) {
+                        self.emit = false;
+                        self.report(tok, reporter.Level.ERROR, "value of type '{s}' cannot be incremented or decremented", .{@tagName(exp.lType)}, true, true);
                         return SyntaxError.TypeError;
                     }
 
@@ -530,21 +664,24 @@ pub const Parser = struct {
                     //  * parse the indexing expression even when typecheking^ fails?
                     //  * special care for multidimensional array
                     try self.consume(tt.LBRACK);
-                    const indexExp = try self.parseExpression();
+                    const indexExp = try self.parseSubExpression();
                     // TODO: this^ can fail and write some message. This means that there cannot be just a single
                     // error message but array of them. The error reporting below therefore can override something.
 
-                    if (!types.IsIntegral(indexExp.expType)) {
-                        std.log.err("array cannot be index with type {s}", .{@tagName(indexExp.expType)});
+                    if (!types.IsIntegral(indexExp.lType)) {
+                        self.emit = false;
+                        self.report(tok, reporter.Level.ERROR, "array cannot be indexed with type '{s}'", .{@tagName(indexExp.lType)}, true, true);
                         return SyntaxError.TypeError;
                     }
+
+                    // TODO: check that if the index is constant, it is positive.
 
                     try self.consume(tt.RBRACK);
                     // TODO: what expression should be returned?
                     return exp;
                 },
                 // TBD: this must be fixed next. (tests fail)
-                else => unreachable,
+                else => return exp,
             }
         }
         unreachable;
@@ -557,7 +694,7 @@ pub const Parser = struct {
 
         switch (tok.tokenType) {
             tt.LPAREN => {
-                const exp = try self.parseExpression();
+                const exp = try self.parseSubExpression();
                 try self.consume(tt.RPAREN);
                 return exp;
             },
@@ -569,41 +706,43 @@ pub const Parser = struct {
                 //    => is it a function call?
 
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.STRING },
+                    .lType = types.Type{ .sType = types.SimpleType.STRING },
                 };
             },
             tt.C_INT => {
                 // TODO: check ranges and decide the type.
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.I32 },
+                    .lType = types.Type{ .sType = types.SimpleType.I32 },
                 };
             },
             tt.C_FLOAT => {
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.FLOAT },
+                    .lType = types.Type{ .sType = types.SimpleType.FLOAT },
                 };
             },
             tt.C_BOOL => {
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.BOOL },
+                    .lType = types.Type{ .sType = types.SimpleType.BOOL },
                 };
             },
             tt.C_STRING => {
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.STRING },
+                    .lType = types.Type{ .sType = types.SimpleType.STRING },
                 };
             },
             tt.C_CHAR => {
                 return Expression{
-                    .expType = types.Type{ .sType = types.SimpleType.CHAR },
+                    .lType = types.Type{ .sType = types.SimpleType.CHAR },
                 };
             },
             tt.AT => {
                 // todo: handle builtin functions (only casting here makes sense)
             },
             else => {
-                // TODO: what now?
-                // What if we parse "," that's valid for for loops?
+                // TODO: handle what should be done here.
+                return Expression{
+                    .lType = types.Type{ .sType = types.SimpleType.CHAR },
+                };
             },
         }
         unreachable;
@@ -617,25 +756,29 @@ pub const Parser = struct {
         const next = self.scanner.next();
 
         if (next.tokenType == tt.ILLEGAL) {
-            // It does not make sense to report ILLEGAL tokens here since the scanner has already done it.
-            // TODO: Remove error reporting from scanner and do it just here for simplicity?
-            return SyntaxError.UnexpectedToken;
+            self.emit = false;
+            self.report(next, reporter.Level.ERROR, "encountered illegal symbol '{s}'", .{next.symbol}, true, true);
         }
 
         if (want != next.tokenType) {
-            // Only way the std.fmt.allocPrint can fail is with `OutOfMemory` where it makes sense for us to fail.
-            self.report(next, reporter.Level.ERROR, "expected '{s}' but found '{s}' instead", .{ tt.str(want), next.symbol });
+            self.emit = false;
+            self.report(next, reporter.Level.ERROR, "expected '{s}' but found '{s}' instead", .{ tt.str(want), next.symbol }, true, true);
             return SyntaxError.UnexpectedToken;
         }
 
         return next;
     }
 
-    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype) void {
+    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype, showLine: bool, space: bool) void {
         if (self.rep) |rep| {
             const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
             defer self.alloc.free(msg);
-            rep.report(tok, level, msg);
+
+            if (space) {
+                rep.space();
+                rep.space();
+            }
+            rep.report(tok, level, msg, showLine);
         }
     }
 };

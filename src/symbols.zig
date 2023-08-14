@@ -107,6 +107,14 @@ pub const SymbolTable = struct {
 
         return null;
     }
+
+    pub fn globalIterator(self: *SymbolTable) std.StringHashMap(Symbol).ValueIterator {
+        if (self.scopeStack.items.len < 0) {
+            @panic("ICE: cannot iterate over global scope when there is none open");
+        }
+
+        return self.scopeStack.items[0].valueIterator();
+    }
 };
 
 test "get on empty SymbolTable does not fail" {

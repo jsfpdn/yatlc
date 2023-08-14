@@ -50,12 +50,14 @@ pub const Scanner = struct {
         const oldOffset = self.offset;
         const oldCharOffset = self.charOffset;
         const oldLineOffest = self.lineOffset;
+        const oldLastToken = self.lastToken;
 
         const tok = self._next(true);
 
         self.offset = oldOffset;
         self.charOffset = oldCharOffset;
         self.lineOffset = oldLineOffest;
+        self.lastToken = oldLastToken;
 
         return tok;
     }

@@ -100,9 +100,10 @@ pub const Func = struct {
     pub fn defines(self: *Func, funcDecl: Func) DefinitionErrors!void {
         // Self cannot define `func` if `func` is already defined.
         if (funcDecl.defined) return DefinitionErrors.AlreadyDefined;
+        if (self.args.items.len != funcDecl.args.items.len) return DefinitionErrors.ArgTypeMismatch;
 
         for (0..self.args.items.len) |i| {
-            if (!self.args.items[i].t.equals(funcDecl.args.items[i].t)) {
+            if (!self.args.items[i].t.equals(funcDecl.args.items[i].t.*)) {
                 // TODO: Ideally inform what the mismatch is and where it happened.
                 return DefinitionErrors.ArgTypeMismatch;
             }
@@ -154,22 +155,22 @@ pub const Type = union(TypeTag) {
         return t;
     }
 
-    pub fn equals(self: *Type, other: *Type) bool {
-        if (@intFromEnum(self.*) != @intFromEnum(other.*)) return false;
+    pub fn equals(self: Type, other: Type) bool {
+        if (@intFromEnum(self) != @intFromEnum(other)) return false;
 
-        return switch (self.*) {
+        return switch (self) {
             TypeTag.sType => |selfSimple| selfSimple == other.sType,
-            TypeTag.pointer => |selfPointer| selfPointer.toType.equals(other.pointer.toType),
+            TypeTag.pointer => |selfPointer| selfPointer.toType.equals(other.pointer.toType.*),
             TypeTag.func => |selfFunc| blk: {
-                if (selfFunc.args.items.len != other.func.args.items.len or selfFunc.defined != other.func.defined or selfFunc.namedParams != other.func.namedParams or !selfFunc.retT.equals(other.func.retT))
+                if (selfFunc.args.items.len != other.func.args.items.len or selfFunc.defined != other.func.defined or selfFunc.namedParams != other.func.namedParams or !selfFunc.retT.equals(other.func.retT.*))
                     break :blk false;
                 for (0..selfFunc.args.items.len) |i| {
-                    if (!selfFunc.args.items[i].t.equals(other.func.args.items[i].t))
+                    if (!selfFunc.args.items[i].t.equals(other.func.args.items[i].t.*))
                         break :blk false;
                 }
                 break :blk true;
             },
-            TypeTag.cType => |selfArray| selfArray.dimensions == other.cType.dimensions and selfArray.ofType.equals(other.cType.ofType),
+            TypeTag.cType => |selfArray| selfArray.dimensions == other.cType.dimensions and selfArray.ofType.equals(other.cType.ofType.*),
         };
     }
 };

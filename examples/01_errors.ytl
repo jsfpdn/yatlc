@@ -1,9 +1,18 @@
 // Showcases error reporting and error recovery of yatlc.
 
+// Function declaration and corresponding function definition must agree on types of arguments:
 i32 funcTypeMismatch(i32, u32, [-]u32);
 i32 funcTypeMismatch(u32 a, u32 b, [-]u32 arr) {}
 
+// Function definition cannot omit names of arguments:
 i32 funcArgsUnnamed(u32, u32, [-]u32) {}
 
+// Function cannot be defined more than once:
 unit funcRedefined() {}
 unit funcRedefined() {}
+
+// If function is declared, it must be defined later on:
+[-][-,-]u64 funcNotDefined(i64, u64);
+
+// Syntax error: curly braces do not match.
+i32 main() { 5 }}

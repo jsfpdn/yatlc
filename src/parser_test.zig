@@ -63,9 +63,9 @@ test "parse types" {
         errdefer p.deinit();
 
         if (tc.wantErr) |wantErr| {
-            try std.testing.expectError(wantErr, p.parseType());
+            try std.testing.expectError(wantErr, p.parseType(true));
         } else if (tc.wantType) |wantType| {
-            const gotType = try p.parseType();
+            const gotType = try p.parseType(true);
             defer gotType.destroy(std.testing.allocator);
 
             // std.log.err("\n- {}\n- {}", .{ wantType.*, gotType.* });
@@ -124,6 +124,32 @@ test "parse function definition after declaration" {
         try p.parse();
 
         p.deinit();
+    }
+}
+
+test "parse invalid syntactic constructs" {
+    const testCase = struct {
+        input: [:0]const u8,
+    };
+
+    const cases = [_]testCase{
+        .{ .input = "i32 main() { 5 }}" },
+    };
+
+    for (cases) |tc| {
+        var s = scanner.Scanner.init(tc.input, null);
+        var p = parser.Parser.init(s, null, std.testing.allocator);
+        // parser must be `errdefer`-ed in case an error occurs.
+        errdefer p.deinit();
+
+        p.parse() catch {
+            std.log.err("all ok!", .{});
+            p.deinit();
+            continue;
+        };
+
+        std.log.err("expected error for '{s}'", .{tc.input});
+        unreachable;
     }
 }
 
