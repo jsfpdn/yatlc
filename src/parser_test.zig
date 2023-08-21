@@ -20,13 +20,13 @@ test "parse statements" {}
 
 pub fn createSimpleType(s: types.SimpleType, alloc: std.mem.Allocator) *types.Type {
     const t = alloc.create(types.Type) catch unreachable;
-    t.* = types.Type{ .sType = s };
+    t.* = types.Type{ .simple = s };
     return t;
 }
 
 fn createArrayType(ofType: *types.Type, dimensions: usize, alloc: std.mem.Allocator) *types.Type {
     const t = alloc.create(types.Type) catch unreachable;
-    t.* = types.Type{ .cType = types.Array{ .ofType = ofType, .dimensions = dimensions } };
+    t.* = types.Type{ .array = types.Array{ .ofType = ofType, .dimensions = dimensions } };
     return t;
 }
 
@@ -63,9 +63,9 @@ test "parse types" {
         errdefer p.deinit();
 
         if (tc.wantErr) |wantErr| {
-            try std.testing.expectError(wantErr, p.parseType(true));
+            try std.testing.expectError(wantErr, p.parseType());
         } else if (tc.wantType) |wantType| {
-            const gotType = try p.parseType(true);
+            const gotType = try p.parseType();
             defer gotType.destroy(std.testing.allocator);
 
             // std.log.err("\n- {}\n- {}", .{ wantType.*, gotType.* });
@@ -130,10 +130,12 @@ test "parse function definition after declaration" {
 test "parse invalid syntactic constructs" {
     const testCase = struct {
         input: [:0]const u8,
+        err: []const u8,
     };
 
     const cases = [_]testCase{
-        .{ .input = "i32 main() { 5 }}" },
+        .{ .input = "i32 main() { 5 }}", .err = "expected type, found '}' instead" },
+        // .{ .input = "i32 main() {{ 5 }", .err = "expected type, found '}' instead" },
     };
 
     for (cases) |tc| {
@@ -142,14 +144,11 @@ test "parse invalid syntactic constructs" {
         // parser must be `errdefer`-ed in case an error occurs.
         errdefer p.deinit();
 
-        p.parse() catch {
-            std.log.err("all ok!", .{});
-            p.deinit();
-            continue;
-        };
+        p.parse() catch {};
 
-        std.log.err("expected error for '{s}'", .{tc.input});
-        unreachable;
+        try std.testing.expectEqualStrings(tc.err, p.errors.pop());
+
+        p.deinit();
     }
 }
 
@@ -158,13 +157,11 @@ const testErrors = error{ExpectedEqual};
 fn expectEqualDeep(want: *types.Type, got: *types.Type) testErrors!void {
     std.testing.expectEqual(@intFromEnum(want.*), @intFromEnum(got.*)) catch return testErrors.ExpectedEqual;
     switch (want.*) {
-        types.TypeTag.sType => |wantS| std.testing.expectEqual(wantS, got.sType) catch return testErrors.ExpectedEqual,
-        types.TypeTag.cType => |wantC| {
-            std.testing.expectEqual(wantC.dimensions, got.cType.dimensions) catch return testErrors.ExpectedEqual;
-            try expectEqualDeep(wantC.ofType, got.cType.ofType);
-        },
-        types.TypeTag.pointer => |wantP| {
-            try expectEqualDeep(wantP.toType, got.pointer.toType);
+        types.TypeTag.simple => |wantS| std.testing.expectEqual(wantS, got.simple) catch return testErrors.ExpectedEqual,
+        types.TypeTag.constant => |wantC| std.testing.expectEqual(wantC.int, got.constant.int) catch return testErrors.ExpectedEqual,
+        types.TypeTag.array => |wantA| {
+            std.testing.expectEqual(wantA.dimensions, got.array.dimensions) catch return testErrors.ExpectedEqual;
+            try expectEqualDeep(wantA.ofType, got.array.ofType);
         },
         types.TypeTag.func => |wantF| {
             expectEqualDeep(wantF.retT, got.func.retT) catch return testErrors.ExpectedEqual;

@@ -98,19 +98,19 @@ pub const Scanner = struct {
             ':' => tok.tokenType = TokenType.COLON,
             '@' => tok.tokenType = TokenType.AT,
             '#' => tok.tokenType = TokenType.HASH,
-            '^' => tok.tokenType = TokenType.XOR,
+            '^' => self.switch2(&tok, '=', TokenType.XOR_ASSIGN, TokenType.B_XOR),
             '?' => self.switch2(&tok, '?', TokenType.D_QUESTION_MARK, TokenType.QUESTION_MARK),
             '*' => self.switch2(&tok, '=', TokenType.MUL_ASSIGN, TokenType.MUL),
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
             '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
-            '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NOT),
+            '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NEG),
             // TODO: Implement <<=, >>=, &&=, ||=
-            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.LSH, TokenType.LT),
-            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.RSH, TokenType.GT),
+            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.B_LSH, TokenType.LT),
+            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.B_RSH, TokenType.GT),
             '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
-            '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.AND),
-            '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.OR),
+            '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.B_AND),
+            '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.B_OR),
             '"' => self.parseStringLiteral(&tok),
             '\'' => self.parseCharLiteral(&tok),
             'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
@@ -150,7 +150,15 @@ pub const Scanner = struct {
     fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
         tok.tokenType = TokenType.IDENT;
         self.parseIdent(tok);
-        if (token.TokenType.getKeyword(self.symbol(tok.*))) |keyword| {
+        if (std.mem.eql(u8, "true", self.symbol(tok.*)) or std.mem.eql(u8, "true", self.symbol(tok.*))) {
+            tok.tokenType = token.TokenType.C_BOOL;
+        } else if (std.mem.eql(u8, "not", self.symbol(tok.*))) {
+            tok.tokenType = token.TokenType.NEG;
+        } else if (std.mem.eql(u8, "and", self.symbol(tok.*))) {
+            tok.tokenType = token.TokenType.AND;
+        } else if (std.mem.eql(u8, "or", self.symbol(tok.*))) {
+            tok.tokenType = token.TokenType.OR;
+        } else if (token.TokenType.getKeyword(self.symbol(tok.*))) |keyword| {
             tok.tokenType = keyword;
         } else if (token.TokenType.getBuiltin(self.symbol(tok.*))) |builtin| {
             tok.tokenType = builtin;

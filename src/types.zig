@@ -1,6 +1,16 @@
 const std = @import("std");
 
 const symbols = @import("symbols.zig");
+const tokens = @import("token.zig");
+
+pub fn startsType(symbol: []const u8) bool {
+    if (SimpleType.getType(symbol)) |found| {
+        _ = found;
+        return true;
+    }
+
+    return std.mem.eql(u8, symbol, "[");
+}
 
 pub const SimpleType = enum(u8) {
     I64,
@@ -14,8 +24,6 @@ pub const SimpleType = enum(u8) {
     FLOAT,
     DOUBLE,
     BOOL,
-    STRING,
-    CHAR,
     UNIT,
 
     const SimpleTypeTable = [@typeInfo(SimpleType).Enum.fields.len][:0]const u8{
@@ -30,14 +38,22 @@ pub const SimpleType = enum(u8) {
         "float",
         "double",
         "bool",
-        "string",
-        "char",
         "unit",
     };
 
-    pub fn getType(str: []const u8) ?SimpleType {
+    pub fn str(self: SimpleType) []const u8 {
+        return SimpleTypeTable[@intFromEnum(self)];
+    }
+
+    pub fn create(alloc: std.mem.Allocator, st: SimpleType) *Type {
+        var t = alloc.create(Type) catch unreachable;
+        t.* = Type{ .simple = st };
+        return t;
+    }
+
+    pub fn getType(name: []const u8) ?SimpleType {
         for (SimpleTypeTable, 0..) |t, i| {
-            if (std.mem.eql(u8, str, t)) {
+            if (std.mem.eql(u8, name, t)) {
                 return @as(SimpleType, @enumFromInt(i));
             }
         }
@@ -45,12 +61,26 @@ pub const SimpleType = enum(u8) {
         return null;
     }
 
-    pub fn isType(str: []const u8) bool {
-        if (SimpleType.getType(str)) |_| {
+    pub fn isType(name: []const u8) bool {
+        if (SimpleType.getType(name)) |_| {
             return true;
         }
 
         return false;
+    }
+
+    pub fn isIntegral(st: SimpleType) bool {
+        return switch (st) {
+            SimpleType.UNIT, SimpleType.BOOL => false,
+            else => true,
+        };
+    }
+
+    pub fn isNumeric(st: SimpleType) bool {
+        return switch (st) {
+            SimpleType.UNIT, SimpleType.BOOL, SimpleType.DOUBLE, SimpleType.FLOAT => false,
+            else => true,
+        };
     }
 };
 
@@ -60,14 +90,6 @@ pub const Array = struct {
 
     fn destroy(self: *Array, alloc: std.mem.Allocator) void {
         self.*.ofType.destroy(alloc);
-    }
-};
-
-pub const Pointer = struct {
-    toType: *Type = undefined,
-
-    fn destroy(self: *Pointer, alloc: std.mem.Allocator) void {
-        self.*.toType.destroy(alloc);
     }
 };
 
@@ -111,25 +133,29 @@ pub const Func = struct {
     }
 };
 
+pub const Constant = struct {
+    int: i128 = 0,
+    float: f64 = 0.0,
+};
+
 pub const TypeTag = enum(u8) {
-    sType,
-    cType,
-    pointer,
+    simple,
+    array,
     func,
+    constant,
 };
 
 pub const Type = union(TypeTag) {
-    sType: SimpleType,
-    cType: Array,
-    pointer: Pointer,
+    simple: SimpleType,
+    constant: Constant,
+    array: Array,
     func: Func,
 
     pub fn destroy(self: *Type, alloc: std.mem.Allocator) void {
         switch (self.*) {
-            TypeTag.cType => |*array| array.destroy(alloc),
-            TypeTag.pointer => |*pointer| pointer.destroy(alloc),
+            TypeTag.array => |*array| array.destroy(alloc),
             TypeTag.func => |*func| func.destroy(alloc),
-            TypeTag.sType => {},
+            else => {},
         }
         alloc.destroy(self);
     }
@@ -137,9 +163,9 @@ pub const Type = union(TypeTag) {
     pub fn clone(self: *Type, alloc: std.mem.Allocator) *Type {
         var t = alloc.create(Type) catch unreachable;
         t.* = switch (self.*) {
-            TypeTag.sType => |simple| Type{ .sType = simple },
-            TypeTag.cType => |array| Type{ .cType = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
-            TypeTag.pointer => |pointer| Type{ .pointer = Pointer{ .toType = pointer.toType.clone(alloc) } },
+            TypeTag.simple => |simple| Type{ .simple = simple },
+            TypeTag.constant => |constant| Type{ .constant = Constant{ .int = constant.int, .float = constant.float } },
+            TypeTag.array => |array| Type{ .array = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
             TypeTag.func => |func| blk: {
                 var newFunc = Func{
                     .retT = func.retT.clone(alloc),
@@ -159,71 +185,83 @@ pub const Type = union(TypeTag) {
         if (@intFromEnum(self) != @intFromEnum(other)) return false;
 
         return switch (self) {
-            TypeTag.sType => |selfSimple| selfSimple == other.sType,
-            TypeTag.pointer => |selfPointer| selfPointer.toType.equals(other.pointer.toType.*),
-            TypeTag.func => |selfFunc| blk: {
-                if (selfFunc.args.items.len != other.func.args.items.len or selfFunc.defined != other.func.defined or selfFunc.namedParams != other.func.namedParams or !selfFunc.retT.equals(other.func.retT.*))
+            TypeTag.simple => |simple| simple == other.simple,
+            TypeTag.constant => |constant| constant.int == other.constant.int,
+            TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
+            TypeTag.func => |func| blk: {
+                if (func.args.items.len != other.func.args.items.len or func.defined != other.func.defined or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
                     break :blk false;
-                for (0..selfFunc.args.items.len) |i| {
-                    if (!selfFunc.args.items[i].t.equals(other.func.args.items[i].t.*))
+                for (0..func.args.items.len) |i| {
+                    if (!func.args.items[i].t.equals(other.func.args.items[i].t.*))
                         break :blk false;
                 }
                 break :blk true;
             },
-            TypeTag.cType => |selfArray| selfArray.dimensions == other.cType.dimensions and selfArray.ofType.equals(other.cType.ofType.*),
+        };
+    }
+
+    pub fn isArray(self: Type) bool {
+        return switch (self) {
+            TypeTag.array => true,
+            else => false,
+        };
+    }
+
+    pub fn isConstant(self: Type) bool {
+        return switch (self) {
+            TypeTag.constant => true,
+            else => false,
+        };
+    }
+
+    pub fn isFunction(self: Type) bool {
+        return switch (self) {
+            TypeTag.func => true,
+            else => false,
+        };
+    }
+
+    pub fn isUnit(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |simple| simple == SimpleType.UNIT,
+            else => false,
+        };
+    }
+
+    pub fn isIntegral(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| SimpleType.isIntegral(st),
+            TypeTag.constant => true,
+            else => false,
+        };
+    }
+
+    pub fn isNumeric(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| SimpleType.isNumeric(st),
+            TypeTag.constant => true,
+            else => false,
+        };
+    }
+
+    pub fn str(self: Type) []const u8 {
+        return switch (self) {
+            TypeTag.simple => |st| st.str(),
+            TypeTag.array => "array",
+            TypeTag.func => "function",
+            TypeTag.constant => "constant",
         };
     }
 };
 
-pub fn IsIntegral(t: Type) bool {
-    switch (t) {
-        Type.cType => return false,
-        Type.sType => {
-            switch (t.sType) {
-                SimpleType.I64, SimpleType.I32, SimpleType.I16, SimpleType.U64, SimpleType.U32, SimpleType.U16 => return true,
-                else => return false,
-            }
-        },
-        else => return false,
-    }
-}
-
-pub fn IsNum(t: Type) bool {
-    if (IsIntegral(t)) {
-        return true;
-    }
-
-    return switch (t) {
-        Type.sType => {
-            return switch (t.sType) {
-                SimpleType.FLOAT => true,
-                else => false,
-            };
-        },
-        else => false,
-    };
-}
-
 test "array type does not leak memory" {
     var innerT = try std.testing.allocator.create(Type);
-    innerT.* = Type{ .sType = SimpleType.I8 };
+    innerT.* = Type{ .simple = SimpleType.I8 };
 
     var t = try std.testing.allocator.create(Type);
-    t.* = Type{ .cType = Array{
+    t.* = Type{ .array = Array{
         .ofType = innerT,
     } };
 
     defer t.destroy(std.testing.allocator);
-}
-
-test "pointer type does not leak memory" {
-    var innerT = try std.testing.allocator.create(Type);
-    innerT.* = Type{ .sType = SimpleType.I8 };
-
-    var ptr = try std.testing.allocator.create(Type);
-    ptr.* = Type{ .pointer = Pointer{
-        .toType = innerT,
-    } };
-
-    defer ptr.destroy(std.testing.allocator);
 }

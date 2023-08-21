@@ -78,10 +78,10 @@ test "scan identifiers, keywords, and builtin" {
         .{ .symbol = "print", .tokenType = TokenType.PRINT },
         .{ .symbol = "read", .tokenType = TokenType.READ },
         .{ .symbol = "<", .tokenType = TokenType.LT },
-        .{ .symbol = "<<", .tokenType = TokenType.LSH },
+        .{ .symbol = "<<", .tokenType = TokenType.B_LSH },
         .{ .symbol = "<=", .tokenType = TokenType.LEQ },
         .{ .symbol = ">", .tokenType = TokenType.GT },
-        .{ .symbol = ">>", .tokenType = TokenType.RSH },
+        .{ .symbol = ">>", .tokenType = TokenType.B_RSH },
         .{ .symbol = ">=", .tokenType = TokenType.GEQ },
         .{ .symbol = "EOF", .tokenType = TokenType.EOF },
     };

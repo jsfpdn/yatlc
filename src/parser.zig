@@ -11,23 +11,17 @@ const tt = token.TokenType;
 pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory, RecoverableError };
 
 pub const Expression = struct {
-    // expType denotes the type of the result of this expression.
-    // token.TokenType.isType(this) must always evaluate to true.
-    lType: types.Type = undefined,
+    t: *types.Type = undefined,
+    lt: *types.Type = undefined,
 
     rValue: []const u8 = "",
-    rType: types.Type = undefined,
 
     hasLValue: bool = false,
     lValueComputed: bool = false,
     lValue: []const u8 = "",
 
-    semicolonFollows: bool = true,
+    semiMustFollow: bool = false,
     endsWithReturn: bool = false,
-
-    // callsFunction denotes whether there is a function call in the expression somewhere.
-    // This is done to restrict function calls in the top-level statements.
-    callsFunction: bool = false,
 };
 
 pub const Parser = struct {
@@ -68,8 +62,9 @@ pub const Parser = struct {
             if (next.tokenType == tt.COMMENT) {
                 self.consume(tt.COMMENT) catch unreachable;
             } else {
-                self.parseTopLevelStatement() catch {};
+                self.parseTopLevelStatement() catch return SyntaxError.UnexpectedToken;
             }
+
             next = self.scanner.peek();
         }
 
@@ -94,7 +89,10 @@ pub const Parser = struct {
         // 1) global variable definition: <type> <ident> = <expr>;
         // 2) (forward) function declaration: <type> <ident>(<arglist>);
         // 3) function definition: <type> <ident>(<arglist>) <body>
-        const t = try self.parseType(true);
+
+        const t = try self.parseType();
+        // errdefer t.destroy(self.alloc);
+
         const ident = try self.consumeGet(tt.IDENT);
 
         var next = self.scanner.next();
@@ -105,6 +103,7 @@ pub const Parser = struct {
             tt.LPAREN => {
                 var ft = self.alloc.create(types.Type) catch unreachable;
                 ft.* = types.Type{ .func = types.Func.init(self.alloc, t) };
+                // TODO: Freeing ft?
                 errdefer ft.destroy(self.alloc);
                 ft.func.args = try self.parseArgList();
 
@@ -144,7 +143,9 @@ pub const Parser = struct {
                         }
                     }
 
-                    try self.parseBody();
+                    var exp = try self.parseBody();
+
+                    errdefer exp.t.destroy(self.alloc);
                     // Close the scope just for the function arguments.
                     self.st.close();
 
@@ -196,7 +197,7 @@ pub const Parser = struct {
                 }
             },
             else => {
-                t.destroy(self.alloc);
+                // t.destroy(self.alloc);
 
                 self.emit = false;
                 self.report(next, reporter.Level.ERROR, "expected either function declaration, definition or global variable definiton", .{}, true, true);
@@ -214,11 +215,13 @@ pub const Parser = struct {
         var argNames = argNamesE.DoNotKnow;
 
         var args = std.ArrayList(symbols.Symbol).init(self.alloc);
+        errdefer args.deinit();
+
         while (next.tokenType != tt.RPAREN) {
             if (expectComma) try self.consume(tt.COMMA);
 
             var s = symbols.Symbol{
-                .t = try self.parseType(true),
+                .t = try self.parseType(),
             };
 
             errdefer s.t.destroy(self.alloc);
@@ -250,27 +253,8 @@ pub const Parser = struct {
         return args;
     }
 
-    /// Tries to parse a type. If a type cannot be parsed, scanner's state is rewinded back
-    /// to the state before parsing.
-    fn tryParseType(self: *Parser, verbose: bool) ?*types.Type {
-        const oldOffset = self.scanner.offset;
-        const oldCharOffset = self.scanner.charOffset;
-        const oldLineOffest = self.scanner.lineOffset;
-        const oldLastToken = self.scanner.lastToken;
-
-        var t = self.parseType(verbose) catch {
-            self.scanner.offset = oldOffset;
-            self.scanner.charOffset = oldCharOffset;
-            self.scanner.lineOffset = oldLineOffest;
-            self.scanner.lastToken = oldLastToken;
-            return null;
-        };
-
-        return t;
-    }
-
-    /// Parses a type. `verbose` argument specifies whether to report an error when parsing the type.
-    pub fn parseType(self: *Parser, verbose: bool) SyntaxError!*types.Type {
+    /// Parses a type.
+    pub fn parseType(self: *Parser) SyntaxError!*types.Type {
         var tok = self.scanner.next();
 
         var tp = try self.alloc.create(types.Type);
@@ -278,11 +262,11 @@ pub const Parser = struct {
 
         return switch (tok.tokenType) {
             tt.IDENT => if (types.SimpleType.getType(tok.symbol)) |t| {
-                tp.* = types.Type{ .sType = t };
+                tp.* = types.Type{ .simple = t };
                 return tp;
             } else {
                 self.emit = false;
-                if (verbose) self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol}, true, true);
+                self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
             tt.LBRACK => {
@@ -294,40 +278,73 @@ pub const Parser = struct {
                     tok = self.scanner.next();
                     if (tok.tokenType == tt.COMMA) {}
                 }
-                array.ofType = try self.parseType(true);
-                tp.* = types.Type{ .cType = array };
+                array.ofType = try self.parseType();
+                tp.* = types.Type{ .array = array };
                 return tp;
             },
             else => {
                 self.emit = false;
-                if (verbose) self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol}, true, true);
+                self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
         };
     }
 
     // E
-    pub fn parseExpression(self: *Parser) SyntaxError!void {
+    pub fn parseExpression(self: *Parser) SyntaxError!Expression {
         var tok = self.scanner.peek();
 
         while (!endParseExpression(tok.tokenType)) {
+            var exp: ?Expression = null;
+            defer {
+                // Destroy the old expression after every iteration.
+                // TODO: This must be fixed in order to properly return the expression.
+                if (exp) |e| e.t.destroy(self.alloc);
+            }
+
             switch (tok.tokenType) {
-                tt.WHILE => try self.parseWhile(),
-                tt.DO => try self.parseDoWhile(),
-                tt.FOR => try self.parseFor(),
-                tt.IF => try self.parseIf(),
-                tt.RETURN => try self.parseReturn(),
-                tt.BREAK => try self.parseBreak(),
-                tt.CONTINUE => try self.parseContinue(),
-                tt.SEMICOLON => try self.consume(tt.SEMICOLON),
+                tt.WHILE => {
+                    exp = try self.parseWhile();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.DO => {
+                    exp = try self.parseDoWhile();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.FOR => {
+                    exp = try self.parseFor();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.IF => {
+                    exp = try self.parseIf();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.RETURN => {
+                    exp = try self.parseReturn();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.BREAK => {
+                    exp = try self.parseBreak();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.CONTINUE => {
+                    exp = try self.parseContinue();
+                    errdefer exp.t.destroy(self.alloc);
+                },
+                tt.SEMICOLON => {
+                    // TODO: What should happen here with the expression?
+                    try self.consume(tt.SEMICOLON);
+                },
                 else => {
-                    _ = try self.parseSubExpression();
-                    // TODO: semicolon magic here.
+                    exp = try self.parseSubExpression();
+                    errdefer exp.t.destroy(self.alloc);
                 },
             }
 
             tok = self.scanner.peek();
         }
+
+        return Expression{};
     }
 
     fn endParseExpression(tokenType: tt) bool {
@@ -338,269 +355,502 @@ pub const Parser = struct {
         return false;
     }
 
-    fn parseIf(self: *Parser) SyntaxError!void {
+    fn parseIf(self: *Parser) SyntaxError!Expression {
         try self.consume(tt.IF);
         try self.consume(tt.LPAREN);
-        _ = try self.parseExpression(); // TODO: typecheck
+
+        var ifExp = try self.parseExpression();
+        errdefer ifExp.t.destroy(self.alloc);
+
         try self.consume(tt.RPAREN);
-        try self.parseBody();
+
+        var body = try self.parseBody();
+        errdefer body.t.destroy(self.alloc);
 
         if (self.scanner.peek().tokenType != tt.ELSE) {
             // TODO: implement this.
-            return;
+            return Expression{};
         }
 
         self.consume(tt.ELSE) catch unreachable;
 
         if (self.scanner.peek().tokenType == tt.IF) {
-            // TODO: take extra care with synthesized arguments here. Check what should happen
-            // if parseI fails.
-            _ = try self.parseIf();
+            var anotherIfExp = try self.parseIf();
+            errdefer anotherIfExp.t.destroy(self.alloc);
         } else {
-            try self.parseBody();
+            var anotherBody = try self.parseBody();
+            errdefer anotherBody.t.destroy(self.alloc);
         }
+
+        return Expression{};
     }
 
-    fn parseFor(self: *Parser) SyntaxError!void {
+    fn parseFor(self: *Parser) SyntaxError!Expression {
         self.consume(tt.FOR) catch unreachable;
         try self.consume(tt.LPAREN);
-        _ = try self.parseExpression();
+
+        var initExp = try self.parseExpression();
+        errdefer initExp.t.destroy(self.alloc);
+
         try self.consume(tt.COMMA);
-        _ = try self.parseExpression(); // TODO: typecheck
+
+        var condExp = try self.parseExpression();
+        errdefer condExp.t.destroy(self.alloc);
+
         try self.consume(tt.COMMA);
-        _ = try self.parseExpression();
+
+        var stepExp = try self.parseExpression();
+        errdefer stepExp.t.destroy(self.alloc);
+
         try self.consume(tt.RPAREN);
-        try self.parseBody();
+
+        var body = try self.parseBody();
+        errdefer body.t.destroy(self.alloc);
+
+        return Expression{};
     }
 
-    fn parseWhile(self: *Parser) SyntaxError!void {
+    fn parseWhile(self: *Parser) SyntaxError!Expression {
         self.consume(tt.WHILE) catch unreachable;
         try self.consume(tt.LPAREN);
-        _ = try self.parseExpression(); // TODO: typecheck
-        try self.parseBody();
+
+        var exp = try self.parseExpression(); // TODO: typecheck
+        errdefer exp.t.destroy(self.alloc);
+        try self.consume(tt.RPAREN);
+
+        var body = try self.parseBody();
+        errdefer body.t.destroy(self.alloc);
+
+        return Expression{};
     }
 
-    fn parseDoWhile(self: *Parser) SyntaxError!void {
+    fn parseDoWhile(self: *Parser) SyntaxError!Expression {
         self.consume(tt.DO) catch unreachable;
-        try self.parseBody();
+
+        var body = try self.parseBody();
+        errdefer body.t.destroy(self.alloc);
+
         try self.consume(tt.WHILE);
         try self.consume(tt.LPAREN);
-        _ = try self.parseExpression(); // TODO: typecheck
+
+        var exp = try self.parseExpression(); // TODO: typecheck
+        errdefer exp.t.destroy(self.alloc);
+
         try self.consume(tt.RPAREN);
+        return Expression{};
     }
 
-    fn parseBody(self: *Parser) SyntaxError!void {
-        self.consume(tt.LBRACE) catch unreachable;
-        _ = try self.parseExpression();
+    fn parseBody(self: *Parser) SyntaxError!Expression {
+        try self.consume(tt.LBRACE);
+
+        var exp = try self.parseExpression();
+        errdefer exp.t.destroy(self.alloc);
+
         try self.consume(tt.RBRACE);
+
+        return exp;
     }
 
-    fn parseReturn(self: *Parser) SyntaxError!void {
+    fn parseReturn(self: *Parser) SyntaxError!Expression {
         self.consume(tt.RETURN) catch unreachable;
 
-        switch (self.scanner.peek().tokenType) {
-            tt.SEMICOLON, tt.RPAREN, tt.RBRACK, tt.RBRACE, tt.COMMA, tt.COLON => {
+        return switch (self.scanner.peek().tokenType) {
+            tt.SEMICOLON, tt.RPAREN, tt.RBRACK, tt.RBRACE, tt.COMMA, tt.COLON => blk: {
                 // TODO: check that the return type of the current context is void ("unit"),
                 // throw type error otherwise since return argument is expected (of the correct type).
+                break :blk Expression{};
             },
-            else => try self.parseExpression(),
-        }
+            else => try self.parseSubExpression(),
+        };
     }
 
-    fn parseBreak(self: *Parser) SyntaxError!void {
+    fn parseBreak(self: *Parser) SyntaxError!Expression {
         // TODO: check that the break_stack is not empty (=> there's something to break out of)
         self.consume(tt.BREAK) catch unreachable;
         // TODO: semicolon magic here.
+        return Expression{};
     }
 
-    fn parseContinue(self: *Parser) SyntaxError!void {
+    fn parseContinue(self: *Parser) SyntaxError!Expression {
         // TODO: check that the continue_stack is not empty (=> there's something to continue in)
         self.consume(tt.CONTINUE) catch unreachable;
         // TODO: semicolon magic here.
+        return Expression{};
     }
 
     // E^1
     fn parseSubExpression(self: *Parser) SyntaxError!Expression {
-        var exp = Expression{ .lType = undefined };
-        var decl = true;
+        var exp = Expression{};
+        var declaration = true;
 
-        if (self.tryParseType(false)) |t| {
-            // TODO:parseType moves the scanner!!!!
-            // This must not move the scanner and return whatever is under it instead....
-            // TODO: work on this first...
-            const ident = try self.consumeGet(tt.IDENT);
-            // TODO: emit alloca
-            self.st.insert(symbols.Symbol{
-                .name = ident.symbol,
-                .llvmName = "TODO",
-                .location = ident,
-                .t = t,
-            }) catch {
-                self.emit = false;
-                self.report(ident, reporter.Level.ERROR, "'{s}' is already defined in the current scope", .{ident.symbol}, true, true);
-            };
+        var tok = self.scanner.peek();
+        if (std.mem.eql(u8, tok.symbol, "unit")) {
+            try self.consume(tt.IDENT);
+            try self.define(tok.symbol, types.SimpleType.create(self.alloc, types.SimpleType.UNIT), tok);
+            // TODO: Is it possible to continue with parsing even when TypeError occured?
+            // TODO: set expression attributes - type = unit, lvalue...
+        } else if (types.startsType(tok.symbol)) {
+            // Current token under the cursor is either a simple type or an array type.
+            var t = try self.parseType();
+            errdefer t.destroy(self.alloc);
+
+            tok = try self.consumeGet(tt.IDENT);
+            try self.define(tok.symbol, t, tok);
+            // TODO: Is it possible to continue with parsing even when TypeError occured?
+            // TODO: emit IR & set expression attributes.
         } else {
-            // not a type
-            decl = false;
+            declaration = false;
+
             exp = try self.parseTernaryExpression();
+            errdefer exp.t.destroy(self.alloc);
         }
 
-        var next = self.scanner.peek();
-
-        if (!token.TokenType.isAssignment(next.tokenType)) return exp;
-        if (decl) next = try self.consumeGet(tt.ASSIGN);
-
-        if (!exp.hasLValue) {
-            self.emit = false;
-            self.report(next, reporter.Level.ERROR, "does not have l-value", .{}, true, true);
-            return SyntaxError.RecoverableError;
+        var assignTok = self.scanner.peek();
+        if (!token.TokenType.isAssignment(tok.tokenType)) {
+            return exp;
         }
 
-        switch (next.tokenType) {
+        if (declaration) {
+            try self.consume(tt.ASSIGN);
+        }
+
+        // TODO: Check that expression has lvalue, error and return otherwise.
+        // TODO: Set expression attributes.
+
+        switch (assignTok.tokenType) {
             tt.ASSIGN => {
-                const rExp = try self.parseSubExpression();
-                exp.rType = rExp.lType;
+                self.consume(tt.ASSIGN) catch unreachable;
+                var subExp = try self.parseSubExpression();
+                errdefer subExp.t.destroy(self.alloc);
+                // TODO: Set expression attributes.
+            },
+            tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
+                // TODO: When generating IR, do not forget about signedness for tt.QUO_ASSIGN.
+                // TODO: Create a single function for emitting all the necessary IR (including type conversions) depending on the operation.
 
-                if (exp.lType.equals(types.Type{ .sType = types.SimpleType.UNIT }) and exp.rType.equals(types.Type{ .sType = types.SimpleType.UNIT })) {} else {
-                    // TODO: type conversion goes here: lType and rType
+                self.consume(assignTok.tokenType) catch unreachable;
+                var rhsExp = try self.parseSubExpression();
+                errdefer rhsExp.t.destroy(self.alloc);
+
+                if (!exp.lt.isIntegral()) {
+                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for integral types, not for {s}", .{ assignTok.symbol, exp.lt.str() }, true, true);
+                    return SyntaxError.TypeError;
                 }
 
-                // exp.rValue =
-                exp.semicolonFollows = true;
+                if (!rhsExp.t.isIntegral()) {
+                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for integral types, not for {s}", .{ assignTok.symbol, exp.lt.str() }, true, true);
+                    return SyntaxError.TypeError;
+                }
+
+                // TODO: Set expression attributes.
+                exp.semiMustFollow = true;
             },
-            tt.ADD_ASSIGN => {},
-            tt.SUB_ASSIGN => {},
-            tt.MUL_ASSIGN => {},
-            tt.QUO_ASSIGN => {},
-            tt.REM_ASSIGN => {},
-            tt.LSH_ASSIGN => {},
-            tt.RSH_ASSIGN => {},
-            tt.AND_ASSIGN => {},
-            tt.XOR_ASSIGN => {},
-            tt.OR_ASSIGN => {},
-            tt.LAND_ASSIGN => {},
-            tt.LOR_ASSIGN => {},
-            else => @panic("ICE: no other assignments can occur"),
+            // Assignments:tt.LAND_ASSIGN and tt.LOR_ASSIGN are special due to the fact that they are lazily evaluated.
+            tt.LAND_ASSIGN, tt.LOR_ASSIGN => {
+                // TODO: Create a single function for emitting all the necessary IR (including type conversions) for the lazy operations.
+                self.consume(tt.LAND_ASSIGN) catch unreachable;
+                if (!exp.lt.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.str() }, true, true);
+                    return SyntaxError.TypeError;
+                }
+
+                var rhsExp = try self.parseSubExpression();
+                errdefer rhsExp.t.destroy(self.alloc);
+
+                if (!rhsExp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.str() }, true, true);
+                    return SyntaxError.TypeError;
+                }
+
+                // TODO: Set expression attributes.
+            },
+            else => @panic("ICE: exhausted all the possible assignments"),
         }
 
         return exp;
     }
 
+    // Defines an identifier in te currently open scope. If a symbol with the same identifier
+    // is already defined in the current scope, error is logged instead.
+    fn define(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token) SyntaxError!void {
+        if (self.st.defined(ident)) {
+            var prevDef = self.st.get(ident).?;
+            self.report(
+                at,
+                reporter.Level.ERROR,
+                "'{s}' already defined at {d}:{d}",
+                .{ ident, prevDef.location.sourceLoc.line, prevDef.location.sourceLoc.column },
+                true,
+                true,
+            );
+            return SyntaxError.TypeError;
+        }
+
+        self.st.insert(symbols.Symbol{
+            .name = ident,
+            .llvmName = "TODO",
+            .location = at,
+            .t = t,
+        }) catch unreachable;
+
+        return;
+    }
+
     // E^2
     fn parseTernaryExpression(self: *Parser) SyntaxError!Expression {
-        // <b_expr> ? <expr> : <expr>;
         // exp is potentially a boolen condition for the ternary operator.
         var exp = try self.parseLogicExpressions();
-        // TODO: type checking
-        // * condition must be a boolean expression
-        // * if and else branches must have the same type
-        // * automatic type conversion if one branch is more specific than the other
+        errdefer exp.t.destroy(self.alloc);
 
         var tok = self.scanner.peek();
-        if (tok.tokenType != tt.QUESTION_MARK) {
+        if (tok.tokenType != tt.QUESTION_MARK and tok.tokenType != tt.D_QUESTION_MARK) {
             return exp;
         }
 
-        var thenBranch = try self.parseExpression();
-        try self.consume(tt.COLON);
-        var elseBranch = try self.parseExpression();
+        if (!exp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+            self.report(tok, reporter.Level.ERROR, "non-boolean condition in if statement", .{}, true, true);
+            // We can try and continue with the parsing.
+        }
 
-        _ = thenBranch;
-        _ = elseBranch;
+        return switch (tok.tokenType) {
+            tt.D_QUESTION_MARK => blk: {
+                self.consume(tt.D_QUESTION_MARK) catch unreachable;
+                // TODO: What's selection bool?
 
-        return exp;
+                var exp2 = try self.parseExpression();
+                errdefer exp2.t.destroy(self.alloc);
+
+                try self.consume(tt.COLON);
+
+                var exp3 = try self.parseTernaryExpression();
+                errdefer exp3.t.destroy(self.alloc);
+
+                // TODO: exp2.t and exp3.t must have common supertype, TypeError otherwise.
+                if (exp2.hasLValue and exp3.hasLValue and exp2.lt.equals(exp3.lt.*)) {
+                    if (!exp2.lt.equals(types.Type{ .simple = types.SimpleType.UNIT })) {}
+                }
+
+                // TODO: Set expression attributes.
+                break :blk exp;
+            },
+            tt.QUESTION_MARK => blk: {
+                self.consume(tt.QUESTION_MARK) catch unreachable;
+
+                var exp2 = try self.parseExpression();
+                errdefer exp2.t.destroy(self.alloc);
+
+                try self.consume(tt.COLON);
+
+                var exp3 = try self.parseTernaryExpression();
+                errdefer exp3.t.destroy(self.alloc);
+
+                // TODO: exp2.t and exp3.t must have common supertype, TypeError otherwise.
+                if (exp2.hasLValue and exp3.hasLValue and exp2.lt.equals(exp3.lt.*)) {
+                    if (!exp2.lt.equals(types.Type{ .simple = types.SimpleType.UNIT })) {}
+                }
+
+                break :blk exp;
+            },
+            else => unreachable,
+        };
     }
 
     // E^3, binary and, or, ||, &&
     fn parseLogicExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseNot();
+        errdefer exp.t.destroy(self.alloc);
 
         var tok = self.scanner.peek();
         switch (tok.tokenType) {
-            tt.OR, tt.AND, tt.LAND, tt.LOR => {},
+            // TODO: add 'and' and 'or' tokens.
+            tt.B_OR, tt.B_AND, tt.LAND, tt.LOR => {},
             else => return exp,
         }
 
-        // last_value:
-        // konec:
-        // dedeny_konec:
+        if (!exp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+            self.report(tok, reporter.Level.ERROR, "non-boolean condition in if statement", .{}, true, true);
+            // We can try and continue with the parsing.
+        }
+
+        // TODO: Figure this part out.
         while (true) {
             tok = self.scanner.peek();
             switch (tok.tokenType) {
-                tt.OR => {},
-                tt.AND => {},
                 tt.LAND => {},
                 tt.LOR => {},
+                tt.B_AND => {},
+                tt.B_OR => {},
                 else => return exp,
             }
-
-            _ = self.scanner.next();
-            var exp2 = try self.parseNot();
-            _ = exp2;
         }
     }
 
     // E^4, unary not
     fn parseNot(self: *Parser) SyntaxError!Expression {
         const tok = self.scanner.peek();
-        if (tok.tokenType != tt.NOT) {
-            return self.parseRelationalExpression();
+        if (tok.tokenType == tt.NOT) {
+            self.consume(tt.NOT) catch unreachable;
+
+            var exp = try self.parseNot();
+            errdefer exp.t.destroy(self.alloc);
+
+            if (!exp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+                self.report(tok, reporter.Level.ERROR, "can negate only booleans", .{}, true, true);
+                // We can try and continue with the parsing.
+            }
+            return exp;
         }
 
-        // Skip the '!' and continue.
-        // TODO: type checking
-        _ = self.scanner.next();
-        return self.parseNot();
+        return self.parseRelationalExpression();
     }
 
     // E^5, ==, !=, >, <, >=, =<
     fn parseRelationalExpression(self: *Parser) SyntaxError!Expression {
-        // TODO: handle exp (typechecking)
-        var exp = try self.parseArithmeticExpression();
+        var xExp = try self.parseArithmeticExpression();
+        errdefer xExp.t.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
-        switch (tok.tokenType) {
-            tt.EQL, tt.NEQ, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
-            else => return exp,
+        if (!tt.isRelational(self.scanner.peek().tokenType)) {
+            return xExp;
         }
 
-        while (true) {
-            tok = self.scanner.peek();
+        var accResult: []const u8 = ""; // Accumulated result of all the comparisons together.
+        var result: []const u8 = ""; // Current result.
+        while (tt.isRelational(self.scanner.peek().tokenType)) {
+            var op = self.scanner.next();
+            var yExp = try self.parseArithmeticExpression();
+            errdefer yExp.t.destroy(self.alloc);
 
-            switch (tok.tokenType) {
-                tt.EQL, tt.NEQ, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
-                else => return exp,
+            // TODO: Get supertype of xExp and yExp and store it in t
+            // If there is no common supertype, throw TypeError
+            var t: *types.Type = undefined;
+
+            var valX: ?[]const u8 = null;
+            _ = valX;
+            var valY: ?[]const u8 = null;
+            _ = valY;
+
+            switch (t.*) {
+                types.TypeTag.simple => |simpleType| {
+                    if (simpleType == types.SimpleType.UNIT) {
+                        switch (op.tokenType) {
+                            tt.EQL => result = "1",
+                            tt.NEQ => result = "0",
+                            // Even though we hit type error, we can continue with the parsing.
+                            else => self.report(op, reporter.Level.ERROR, "unit type can be only tested for equality and inequality", .{}, true, true),
+                        }
+                    } else if (simpleType == types.SimpleType.FLOAT or simpleType == types.SimpleType.DOUBLE) {
+                        // TODO: Generate IR depending on the operation.
+                    } else {
+                        // Type must be one of [u64...u8, i64...i8, bool].
+                        // TODO: Generate IR depending on the operation. Think about signedness.
+                    }
+                },
+                types.TypeTag.constant => {
+                    result = switch (op.tokenType) {
+                        tt.EQL => if (xExp.t.constant.int == yExp.t.constant.int) "1" else "0",
+                        tt.LT => if (xExp.t.constant.int < yExp.t.constant.int) "1" else "0",
+                        tt.GT => if (xExp.t.constant.int > yExp.t.constant.int) "1" else "0",
+                        tt.NEQ => if (xExp.t.constant.int != yExp.t.constant.int) "1" else "0",
+                        tt.LEQ => if (xExp.t.constant.int <= yExp.t.constant.int) "1" else "0",
+                        tt.GEQ => if (xExp.t.constant.int >= yExp.t.constant.int) "1" else "0",
+                        else => unreachable,
+                    };
+                },
+                types.TypeTag.array => {
+                    // TODO: Generate IR for tt.EQL and tt.NEQ to just compare pointers.
+                },
+                // The only way we get here is if the common least supertype is function and that cannot happen.
+                else => unreachable,
             }
 
-            _ = self.scanner.next();
-            var exp2 = try self.parseArithmeticExpression();
-            _ = exp2;
+            if (!std.mem.eql(u8, accResult, "")) {
+                // Combine current result with previous results.
+                // TODO: Generate IR and update `accResult`.
+            } else {
+                accResult = result;
+            }
+
+            // xExp = yExp.clone(); // And destroy yExp?
         }
+
+        // TODO: Set expression attributes: type to bool, rValue available etc.
+        return xExp;
     }
 
     // E^6, +, -, >>, <<, &, ^, |
     fn parseArithmeticExpression(self: *Parser) SyntaxError!Expression {
-        // TODO: handle exp (typechecking)
-        var exp = try self.parseUnaryOperators();
+        var xExp = try self.parseUnaryOperators();
+        errdefer xExp.t.destroy(self.alloc);
 
         var tok = self.scanner.peek();
-        switch (tok.tokenType) {
-            tt.ADD, tt.SUB, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
-            else => return exp,
+        if (!tt.isLowerPrioArithmetic(tok.tokenType)) {
+            return xExp;
         }
 
-        while (true) {
-            tok = self.scanner.peek();
+        if (xExp.t.isArray() or xExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.str() }, true, true);
+            // TODO: Does it make sense in this case to continue parsing?
+            return SyntaxError.TypeError;
+        }
 
-            switch (tok.tokenType) {
-                tt.ADD, tt.SUB, tt.LT, tt.GT, tt.LEQ, tt.GEQ => {},
-                else => return exp,
+        var result = "";
+        _ = result;
+        while (tt.isLowerPrioArithmetic(self.scanner.peek().tokenType)) {
+            var op = self.scanner.next();
+
+            var yExp = try self.parseUnaryOperators();
+            errdefer yExp.t.destroy(self.alloc);
+
+            if (yExp.t.isArray() or yExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.str() }, true, true);
+                // TODO: Does it make sense in this case to continue parsing?
+                return SyntaxError.TypeError;
             }
 
-            _ = self.scanner.next();
-            var exp2 = try self.parseUnaryOperators();
-            _ = exp2;
+            // TODO: Get supertype of xExp and yExp and store it in t
+            // If there is no common supertype, throw TypeError
+            var t: *types.Type = undefined;
+
+            if (t.equals(types.Type{ .simple = types.SimpleType.BOOL }) and op.tokenType != tt.B_AND and op.tokenType != tt.B_OR and op.tokenType != tt.B_XOR) {
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
+                // TODO: Does it make sense in this case to continue parsing?
+                return SyntaxError.TypeError;
+            }
+
+            if ((t.equals(types.Type{ .simple = types.SimpleType.DOUBLE }) or t.equals(types.Type{ .simple = types.SimpleType.FLOAT })) and (op.tokenType != tt.ADD or op.tokenType != tt.SUB)) {
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
+                // TODO: Does it make sense in this case to continue parsing?
+                return SyntaxError.TypeError;
+            }
+
+            // TODO: This fails for `i32 main() { 5 + 3; }` since we've not implemented the finding of common supertype,
+            // therefore `t` is undefined.
+            if (t.isConstant()) {
+                t.constant.int = switch (op.tokenType) {
+                    tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
+                    tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
+                    // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
+                    // compiler error: error: expected type 'u7', found 'i128'
+                    // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
+                    // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
+                    tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
+                    tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
+                    tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
+                    else => unreachable,
+                };
+                // TODO: Set expression attributes.
+            } else {
+                var xVal = "";
+                var yVal = "";
+                _ = xVal;
+                _ = yVal;
+                // TODO: Type conversion for xVal and yVal
+                // TODO: Emit IR depending on the operation and expression type.
+                // TODO: Set expression attributes.
+            }
         }
+        // TODO: Set expression attributes.
+        return xExp;
     }
 
     // E^7, -, !
@@ -608,144 +858,356 @@ pub const Parser = struct {
         // TODO: handle exps (type checking)
         const tok = self.scanner.peek();
         return switch (tok.tokenType) {
-            tt.SUB, tt.NEQ => self.parseUnaryOperators(),
-            else => self.parseArithmeticExpressionsLower(),
+            tt.SUB => {
+                self.consume(tt.SUB) catch unreachable;
+
+                var exp = try self.parseUnaryOperators();
+                errdefer exp.t.destroy(self.alloc);
+
+                if (!exp.t.isIntegral() or exp.t.equals(types.Type{ .simple = types.SimpleType.U64 })) {
+                    self.report(tok, reporter.Level.ERROR, "cannot perform unary minus on '{s}'", .{exp.t.str()}, true, true);
+                    // TODO: Does it make sense in this case to continue parsing?
+                    return SyntaxError.TypeError;
+                }
+
+                if (exp.t.isConstant()) {
+                    exp.t.constant.int = -exp.t.constant.int;
+                } else {
+                    // TODO: Emit IR depending on the operation and expression type.
+                    // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
+                    // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
+                    // since there is no i128.
+                }
+                return exp;
+            },
+            tt.NEG => {
+                self.consume(tt.NEG) catch unreachable;
+
+                var exp = try self.parseUnaryOperators();
+                errdefer exp.t.destroy(self.alloc);
+
+                if (!exp.t.isIntegral()) {
+                    self.report(tok, reporter.Level.ERROR, "cannot perform bitwise not on '{s}'", .{exp.t.str()}, true, true);
+                    // TODO: Does it make sense in this case to continue parsing?
+                    return SyntaxError.TypeError;
+                }
+
+                if (exp.t.isConstant()) {
+                    exp.t.constant.int = ~exp.t.constant.int;
+                } else {
+                    // TODO: Emit IR depending on the operation and expression type.
+                    // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
+                    // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
+                    // since there is no i128.
+                }
+                return exp;
+            },
+            else => {
+                var exp = try self.parseArithmeticExpressionsLower();
+                errdefer exp.t.destroy(self.alloc);
+                return exp;
+            },
         };
     }
 
     // E^8, *, /, %
     fn parseArithmeticExpressionsLower(self: *Parser) SyntaxError!Expression {
-        var exp = try self.parseArrayIndexingAndPrefixExpressions();
+        var xExp = try self.parseArrayIndexingAndPrefixExpressions();
+        errdefer xExp.t.destroy(self.alloc);
 
         var tok = self.scanner.peek();
-        switch (tok.tokenType) {
-            tt.MUL, tt.QUO, tt.REM => {},
-            else => return exp,
+        if (!tt.isHigherPrioArithmetic(tok.tokenType)) {
+            return xExp;
         }
 
-        while (true) {
-            tok = self.scanner.peek();
+        if (!xExp.t.isArray() or xExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.str() }, true, true);
+            // TODO: Does it make sense in this case to continue parsing?
+            return SyntaxError.TypeError;
+        }
 
-            switch (tok.tokenType) {
-                tt.MUL, tt.QUO, tt.REM => {},
-                else => return exp, // TODO: this may be incorrect.
+        var result: []const u8 = "";
+        _ = result;
+        while (tt.isHigherPrioArithmetic(self.scanner.peek().tokenType)) {
+            var op = self.scanner.next();
+            var yExp = try self.parseArrayIndexingAndPrefixExpressions();
+            errdefer yExp.t.destroy(self.alloc);
+
+            if (!yExp.t.isArray() or yExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+                self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ op.symbol, yExp.t.str() }, true, true);
+                // TODO: Does it make sense in this case to continue parsing?
+                return SyntaxError.TypeError;
             }
 
-            _ = self.scanner.next();
-            var exp2 = try self.parseArrayIndexingAndPrefixExpressions();
-            _ = exp2;
+            // TODO: Get supertype of xExp and yExp and store it in t
+            // If there is no common supertype, throw TypeError
+            var t: *types.Type = undefined;
+
+            if (t.isConstant()) {
+                t.constant.int = switch (op.tokenType) {
+                    tt.MUL => xExp.t.constant.int * yExp.t.constant.int,
+                    tt.QUO => if (yExp.t.constant.int == 0) blk: {
+                        self.report(tok, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true);
+                        // Instead of dividing, just return dummy value 1 to continue with the parsing.
+                        break :blk 1;
+                    } else @divExact(xExp.t.constant.int, yExp.t.constant.int),
+                    tt.REM => if (yExp.t.constant.int == 0) blk: {
+                        self.report(tok, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true);
+                        // Instead of dividing, just return dummy value 1 to continue with the parsing.
+                        break :blk 1;
+                    } else @rem(xExp.t.constant.int, yExp.t.constant.int),
+                    else => unreachable,
+                };
+            } else {
+                // TODO: Emit IR depending on the operation and expression type.
+                // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
+                // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
+                // since there is no i128.
+            }
         }
+        return xExp;
     }
 
     // E^9, array indexing and ++, --, #
     fn parseArrayIndexingAndPrefixExpressions(self: *Parser) SyntaxError!Expression {
-        const exp = try self.parseI();
+        var exp = try self.parseI();
+        errdefer exp.t.destroy(self.alloc);
 
-        // TODO:
-        //  * implement the pointer-of operator #
-        //  * array indexing (=> array type implemented)
+        const tok = self.scanner.peek();
         while (true) {
-            const tok = self.scanner.peek();
             switch (tok.tokenType) {
                 tt.INC, tt.DEC => {
-                    if (!types.IsNum(exp.lType)) {
-                        self.emit = false;
-                        self.report(tok, reporter.Level.ERROR, "value of type '{s}' cannot be incremented or decremented", .{@tagName(exp.lType)}, true, true);
+                    self.consume(tok.tokenType) catch unreachable;
+
+                    // TODO: Do all the type conversions.
+
+                    if (!exp.hasLValue) {
+                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be incremented or decremented", .{}, true, true);
                         return SyntaxError.TypeError;
                     }
 
-                    _ = self.scanner.next();
-                    return exp;
+                    if (!exp.lt.isIntegral()) {
+                        self.report(tok, reporter.Level.ERROR, "value of type '{s}' cannot be incremented or decremented", .{exp.t.str()}, true, true);
+                        return SyntaxError.TypeError;
+                    }
+
+                    // TODO: Emit IR.
+                    // TODO: Set expression attributes.
+                },
+                tt.HASH => {
+                    self.consume(tt.HASH) catch unreachable;
+                    if (!exp.hasLValue) {
+                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be dereferenced", .{}, true, true);
+                        return SyntaxError.TypeError;
+                    }
+                    // TODO: Set expression attributes.
                 },
                 tt.LBRACK => {
-                    // TODO: handle brackets.
-                    //  * checking bounds?
-                    //  * checking type? e.g. `exp` is not of type array of somethings therefore cannot be indexed
-                    //  * parse the indexing expression even when typecheking^ fails?
-                    //  * special care for multidimensional array
-                    try self.consume(tt.LBRACK);
-                    const indexExp = try self.parseSubExpression();
-                    // TODO: this^ can fail and write some message. This means that there cannot be just a single
-                    // error message but array of them. The error reporting below therefore can override something.
-
-                    if (!types.IsIntegral(indexExp.lType)) {
-                        self.emit = false;
-                        self.report(tok, reporter.Level.ERROR, "array cannot be indexed with type '{s}'", .{@tagName(indexExp.lType)}, true, true);
+                    self.consume(tt.LBRACK) catch unreachable;
+                    if (!exp.t.isArray()) {
+                        self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.str()}, true, true);
                         return SyntaxError.TypeError;
                     }
 
-                    // TODO: check that if the index is constant, it is positive.
+                    if (self.scanner.peek().tokenType == tt.RBRACK) {
+                        // Zero-dimensional array.
+                        self.consume(tt.RBRACK) catch unreachable;
+                        if (exp.t.array.dimensions != 0) {
+                            self.report(tok, reporter.Level.ERROR, "indexing to array must be {d}-dimensional instead of 0-dimensional", .{exp.t.array.dimensions}, true, true);
+                            return SyntaxError.TypeError;
+                        }
+                        // TODO: Set expression attributes.
+                        continue;
+                    }
 
-                    try self.consume(tt.RBRACK);
-                    // TODO: what expression should be returned?
-                    return exp;
+                    var indexes = std.ArrayList([]const u8).init(self.alloc);
+                    var next = self.scanner.peek();
+                    while (next.tokenType != tt.RBRACK) {
+                        var iExp = try self.parseExpression();
+                        errdefer iExp.t.destroy(self.alloc);
+
+                        if (iExp.t.equals(types.Type{ .simple = types.SimpleType.I64 }) or iExp.t.equals(types.Type{ .simple = types.SimpleType.U64 })) {
+                            indexes.append(iExp.rValue) catch unreachable;
+                        } else {
+                            // TODO: Convert iExp to i64
+                        }
+
+                        next = self.scanner.peek();
+                        if (next.tokenType == tt.COMMA) {
+                            self.consume(tt.COMMA) catch unreachable;
+
+                            next = self.scanner.peek();
+                            if (next.tokenType == tt.RBRACK) {
+                                self.report(next, reporter.Level.ERROR, "expected index but found '{s}' instead", .{next.symbol}, true, true);
+                                return SyntaxError.TypeError;
+                            }
+                        } else {
+                            try self.consume(tt.RBRACK);
+                            break;
+                        }
+                    }
+
+                    if (indexes.items.len != exp.t.array.dimensions) {
+                        self.report(next, reporter.Level.ERROR, "cannot index {d}-dimensional array with {d}-dimensional index", .{ exp.t.array.dimensions, indexes.items.len }, true, true);
+                        return SyntaxError.TypeError;
+                    }
+
+                    if (exp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+                        // TODO: Set expression attributes.
+                        continue;
+                    }
+
+                    // TODO: Emit IR with pointer arithmetic.
+                    // TODO: Set expression attributes.
                 },
-                // TBD: this must be fixed next. (tests fail)
                 else => return exp,
             }
         }
-        unreachable;
     }
 
     fn parseI(self: *Parser) SyntaxError!Expression {
-        var tok = self.scanner.next();
-
-        // TODO: handle type casting
-
-        switch (tok.tokenType) {
+        var next = self.scanner.peek();
+        switch (next.tokenType) {
+            tt.LBRACE => {
+                return self.parseBody();
+            },
             tt.LPAREN => {
-                const exp = try self.parseSubExpression();
+                // The pre-prepared expression is not needed.
+
+                self.consume(tt.LPAREN) catch unreachable;
+
+                var exp = try self.parseExpression();
+                errdefer exp.t.destroy(self.alloc);
+
+                exp.semiMustFollow = true;
                 try self.consume(tt.RPAREN);
                 return exp;
             },
             tt.IDENT => {
-                // TODO:
-                // * check identifier in the symbol table
-                //    => whether it's already declared
-                //    => retrieve the type for the expression
-                //    => is it a function call?
+                // The pre-prepared expression is not needed.
 
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.STRING },
-                };
+                const ident = self.consumeGet(tt.IDENT) catch unreachable;
+                if (self.st.functionDefined(ident.symbol)) {
+                    return try self.parseFunctionCall(ident);
+                } else {
+                    var s = self.st.get(ident.symbol) orelse {
+                        self.report(next, reporter.Level.ERROR, "no variable '{s}' is defined", .{next.symbol}, true, true);
+                        return SyntaxError.TypeError;
+                    };
+
+                    if (s.t.isUnit()) {
+                        return Expression{ .t = s.t, .hasLValue = true };
+                    }
+                    // TODO: Set expression attributes.
+                    return Expression{};
+                }
             },
             tt.C_INT => {
-                // TODO: check ranges and decide the type.
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.I32 },
-                };
+                const int = self.consumeGet(tt.C_INT) catch unreachable;
+                var value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
+
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .constant = types.Constant{ .int = value } };
+                return exp;
             },
             tt.C_FLOAT => {
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.FLOAT },
-                };
+                const int = self.consumeGet(tt.C_INT) catch unreachable;
+                var value = std.fmt.parseFloat(f64, int.symbol) catch unreachable;
+
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .constant = types.Constant{ .float = value } };
+                return exp;
+            },
+            tt.C_NULL => {
+                self.consume(tt.C_NULL) catch unreachable;
+
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .array = types.Array{} };
+                return exp;
             },
             tt.C_BOOL => {
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.BOOL },
-                };
-            },
-            tt.C_STRING => {
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.STRING },
-                };
-            },
-            tt.C_CHAR => {
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.CHAR },
-                };
+                const boolean = self.consumeGet(tt.C_BOOL) catch unreachable;
+                var value = if (std.mem.eql(u8, boolean.symbol, "true")) "1" else if (std.mem.eql(u8, boolean.symbol, "false")) "0" else unreachable;
+
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .simple = types.SimpleType.BOOL };
+                exp.rValue = value;
+                return exp;
             },
             tt.AT => {
-                // todo: handle builtin functions (only casting here makes sense)
+                self.consume(tt.AT) catch unreachable;
+                if (types.startsType(self.scanner.peek().symbol)) {
+                    // We're dealing with explicit type conversion.
+                    var newT = try self.parseType();
+                    errdefer newT.destroy(self.alloc);
+
+                    // TODO: Figure out arrays (starts on line 1892).
+                    var cExp = try self.parseI();
+                    errdefer cExp.t.destroy(self.alloc);
+
+                    // TODO: Do the type conversion.
+                    // TODO: Set expression attributes.
+                    return cExp;
+                }
+                // We're dealing with builtin functions.
+                const ident = try self.consume(tt.IDENT);
+                _ = ident;
+                // TODO: Emit IR for calling builtin functions.
+                // TODO: Set expression attributes.
+                return Expression{};
+            },
+            tt.C_CHAR => {
+                const char = self.consumeGet(tt.C_CHAR) catch unreachable;
+                if (char.symbol[0] < 0 or char.symbol[0] > 255) {
+                    self.report(char, reporter.Level.ERROR, "'{s}' is not ASCII-encoded", .{char.symbol}, true, true);
+                    return SyntaxError.TypeError;
+                }
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .simple = types.SimpleType.U8 };
+                exp.rValue = char.symbol;
+                return exp;
+            },
+            tt.C_STRING => {
+                const string = self.consumeGet(tt.C_STRING) catch unreachable;
+                _ = string;
+                // TODO: Emit IR to store the string.
+                var exp = Expression{ .t = try self.alloc.create(types.Type) };
+                exp.t.* = types.Type{ .array = types.Array{ .dimensions = 1 } };
+                exp.t.array.ofType = self.alloc.create(types.Type) catch unreachable;
+                exp.t.array.ofType.* = types.Type{ .simple = types.SimpleType.U8 };
+                // TODO: Set expression attributes.
+                return exp;
             },
             else => {
-                // TODO: handle what should be done here.
-                return Expression{
-                    .lType = types.Type{ .sType = types.SimpleType.CHAR },
-                };
+                self.report(next, reporter.Level.ERROR, "expected '{s}', '(', identifier, function call or a constant value but got '{s}' instead", .{ tt.LBRACE.str(), next.tokenType.str() }, true, true);
+                return SyntaxError.UnexpectedToken;
             },
         }
         unreachable;
+    }
+
+    fn parseFunctionCall(self: *Parser, ident: token.Token) SyntaxError!Expression {
+        try self.consume(tt.LPAREN);
+
+        var funcSymbol = self.st.get(ident.symbol) orelse unreachable;
+
+        for (0..funcSymbol.t.func.args.items.len, funcSymbol.t.func.args.items) |i, arg| {
+            var exp = try self.parseExpression();
+            if (!exp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+                // TODO: Prepare LLVM argument by converting types if necessary
+            } else if (!arg.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+                self.report(arg.location, reporter.Level.ERROR, "argument '{s}' must be of type '{s}' instead of '{s}'", .{ arg.name, types.SimpleType.UNIT.str(), arg.t.str() }, true, true);
+                return SyntaxError.TypeError;
+            }
+
+            if (i != funcSymbol.t.func.args.items.len - 1) try self.consume(tt.COMMA);
+        }
+
+        try self.consume(tt.RPAREN);
+        // TODO: Emit IR.
+        // TODO: Set expression attributes.
+
+        return Expression{};
     }
 
     fn consume(self: *Parser, want: tt) SyntaxError!void {
@@ -770,14 +1232,20 @@ pub const Parser = struct {
     }
 
     fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype, showLine: bool, space: bool) void {
-        if (self.rep) |rep| {
-            const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
-            defer self.alloc.free(msg);
+        // TODO: When reporting, denote in what stage the error happened - scanning, parsing, typechecking, code generation?
+        const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
+        defer self.alloc.free(msg);
 
+        if (level == reporter.Level.ERROR) {
+            self.emit = false;
+        }
+
+        if (self.rep) |rep| {
             if (space) {
                 rep.space();
                 rep.space();
             }
+
             rep.report(tok, level, msg, showLine);
         }
     }

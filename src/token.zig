@@ -51,11 +51,15 @@ pub const TokenType = enum(u8) {
     REM, // %
 
     // Bitwise operators
-    AND, // &
-    OR, // |
-    XOR, // ^
-    LSH, // <<
-    RSH, // >>
+    B_AND, // &
+    B_OR, // |
+    B_XOR, // ^
+    B_LSH, // <<
+    B_RSH, // >>
+
+    NOT, // not
+    AND, // and
+    OR, // or
 
     // Asignment operator
     ASSIGN, // =
@@ -87,10 +91,11 @@ pub const TokenType = enum(u8) {
     EQL, // ==
     LT, // <
     GT, // >
-    NOT, // !
     NEQ, // !=
     LEQ, // <=
     GEQ, // >=
+
+    NEG, // !
 
     LPAREN, // (
     LBRACK, // [
@@ -155,8 +160,29 @@ pub const TokenType = enum(u8) {
         return @intFromEnum(token) >= @intFromEnum(TokenType.LEN) and @intFromEnum(token) <= @intFromEnum(TokenType.READ);
     }
 
+    // Assignments are =, +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=, &&= and ||=.
     pub fn isAssignment(token: TokenType) bool {
-        return @intFromEnum(token) >= @intFromEnum(TokenType.ASSIGN) and @intFromEnum(token) <= @intFromEnum(TokenType.XOR_ASSIGN);
+        return @intFromEnum(token) >= @intFromEnum(TokenType.ASSIGN) and @intFromEnum(token) <= @intFromEnum(TokenType.LOR_ASSIGN);
+    }
+
+    // Relational operators are ==, >, <, >=, <= and !=.
+    pub fn isRelational(token: TokenType) bool {
+        return @intFromEnum(token) >= @intFromEnum(TokenType.EQL) and @intFromEnum(token) <= @intFromEnum(TokenType.GEQ);
+    }
+
+    // Bitwise operators are &, |, ^, << and >>.
+    pub fn isBitwise(token: TokenType) bool {
+        return @intFromEnum(token) >= @intFromEnum(TokenType.B_AND) and @intFromEnum(token) <= @intFromEnum(TokenType.B_RSH);
+    }
+
+    // Lower priority arithmetic operators are all the bitwise operators and + and -.
+    pub fn isLowerPrioArithmetic(token: TokenType) bool {
+        return isBitwise(token) or token == TokenType.ADD or token == TokenType.SUB;
+    }
+
+    // Higher priority arithmetic operators are *, / and %.
+    pub fn isHigherPrioArithmetic(token: TokenType) bool {
+        return @intFromEnum(token) >= @intFromEnum(TokenType.MUL) and @intFromEnum(token) <= @intFromEnum(TokenType.REM);
     }
 
     pub const TokenNameTable = [@typeInfo(TokenType).Enum.fields.len][:0]const u8{
@@ -184,6 +210,10 @@ pub const TokenType = enum(u8) {
         "<<",
         ">>",
 
+        "not",
+        "and",
+        "or",
+
         "=",
 
         "+=",
@@ -209,10 +239,11 @@ pub const TokenType = enum(u8) {
         "==",
         "<",
         ">",
-        "!",
         "!=",
         "<=",
         ">=",
+
+        "!",
 
         "(",
         "[",

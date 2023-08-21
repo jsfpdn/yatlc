@@ -93,9 +93,7 @@ pub fn main() !void {
     var p = parser.Parser.init(s, r, allocator);
     defer p.deinit();
 
-    p.parse() catch |err| {
-        fatal("could not compile: {s}", .{@errorName(err)});
-    };
+    p.parse() catch {};
 }
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {
