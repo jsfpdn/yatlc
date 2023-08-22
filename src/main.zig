@@ -31,7 +31,12 @@ pub const options = struct {
 };
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{ .safety = true }){};
+    var gpa = std.heap.GeneralPurposeAllocator(.{
+        .safety = true,
+        .stack_trace_frames = 100,
+        .never_unmap = true,
+        .retain_metadata = true,
+    }){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 

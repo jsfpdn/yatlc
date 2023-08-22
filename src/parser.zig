@@ -144,8 +144,10 @@ pub const Parser = struct {
                     }
 
                     var exp = try self.parseBody();
+                    // TODO: Expression is destroyed immediately to prevent memory leak.
+                    // Once expressions are better handled, this should probably be deleted:
+                    exp.t.destroy(self.alloc);
 
-                    errdefer exp.t.destroy(self.alloc);
                     // Close the scope just for the function arguments.
                     self.st.close();
 
@@ -292,59 +294,71 @@ pub const Parser = struct {
 
     // E
     pub fn parseExpression(self: *Parser) SyntaxError!Expression {
+        var exp = Expression{
+            // TODO: This is just a dummy value and must be fixed.
+            // If anything goes south, this leaks.
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+        };
+
         var tok = self.scanner.peek();
-
         while (!endParseExpression(tok.tokenType)) {
-            var exp: ?Expression = null;
-            defer {
-                // Destroy the old expression after every iteration.
-                // TODO: This must be fixed in order to properly return the expression.
-                if (exp) |e| e.t.destroy(self.alloc);
-            }
-
             switch (tok.tokenType) {
                 tt.WHILE => {
                     exp = try self.parseWhile();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
                 },
                 tt.DO => {
                     exp = try self.parseDoWhile();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
                 },
                 tt.FOR => {
                     exp = try self.parseFor();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
                 },
                 tt.IF => {
+                    // TODO: How to approach the expression here?
                     exp = try self.parseIf();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
                 },
                 tt.RETURN => {
                     exp = try self.parseReturn();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
+                    exp.endsWithReturn = true;
                 },
                 tt.BREAK => {
                     exp = try self.parseBreak();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
+                    exp.semiMustFollow = true;
                 },
                 tt.CONTINUE => {
                     exp = try self.parseContinue();
-                    errdefer exp.t.destroy(self.alloc);
+                    exp.t.destroy(self.alloc);
+                    exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
+                    exp.semiMustFollow = true;
                 },
                 tt.SEMICOLON => {
                     // TODO: What should happen here with the expression?
                     try self.consume(tt.SEMICOLON);
                 },
                 else => {
-                    exp = try self.parseSubExpression();
-                    errdefer exp.t.destroy(self.alloc);
+                    var exp1 = try self.parseSubExpression();
+                    exp.semiMustFollow = exp1.semiMustFollow;
+
+                    exp.t.destroy(self.alloc);
+                    exp.t = exp1.t;
                 },
             }
 
             tok = self.scanner.peek();
         }
 
-        return Expression{};
+        return exp;
     }
 
     fn endParseExpression(tokenType: tt) bool {
@@ -489,15 +503,20 @@ pub const Parser = struct {
             try self.define(tok.symbol, types.SimpleType.create(self.alloc, types.SimpleType.UNIT), tok);
             // TODO: Is it possible to continue with parsing even when TypeError occured?
             // TODO: set expression attributes - type = unit, lvalue...
+            exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
+            errdefer exp.t.destroy(self.alloc);
         } else if (types.startsType(tok.symbol)) {
             // Current token under the cursor is either a simple type or an array type.
             var t = try self.parseType();
             errdefer t.destroy(self.alloc);
 
             tok = try self.consumeGet(tt.IDENT);
-            try self.define(tok.symbol, t, tok);
+            try self.define(tok.symbol, t.clone(self.alloc), tok);
+            // TODO: The variable should be declared AFTER the right-hand side of the assignment
+            // is parsed, since this allows for constructs such as `i32 a = 3 + a;`.
             // TODO: Is it possible to continue with parsing even when TypeError occured?
             // TODO: emit IR & set expression attributes.
+            exp.t = t;
         } else {
             declaration = false;
 
@@ -506,12 +525,8 @@ pub const Parser = struct {
         }
 
         var assignTok = self.scanner.peek();
-        if (!token.TokenType.isAssignment(tok.tokenType)) {
+        if (!token.TokenType.isAssignment(assignTok.tokenType)) {
             return exp;
-        }
-
-        if (declaration) {
-            try self.consume(tt.ASSIGN);
         }
 
         // TODO: Check that expression has lvalue, error and return otherwise.
@@ -523,12 +538,15 @@ pub const Parser = struct {
                 var subExp = try self.parseSubExpression();
                 errdefer subExp.t.destroy(self.alloc);
                 // TODO: Set expression attributes.
+                // TODO: Destroy type of either subExp or exp.
+                subExp.t.destroy(self.alloc);
             },
             tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
                 // TODO: When generating IR, do not forget about signedness for tt.QUO_ASSIGN.
                 // TODO: Create a single function for emitting all the necessary IR (including type conversions) depending on the operation.
 
                 self.consume(assignTok.tokenType) catch unreachable;
+                // TODO: Destroy type of either rhsExp or exp.
                 var rhsExp = try self.parseSubExpression();
                 errdefer rhsExp.t.destroy(self.alloc);
 
@@ -553,7 +571,7 @@ pub const Parser = struct {
                     self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.str() }, true, true);
                     return SyntaxError.TypeError;
                 }
-
+                // TODO: Destroy type of either rhsExp or exp.
                 var rhsExp = try self.parseSubExpression();
                 errdefer rhsExp.t.destroy(self.alloc);
 
@@ -618,17 +636,27 @@ pub const Parser = struct {
                 // TODO: What's selection bool?
 
                 var exp2 = try self.parseExpression();
-                errdefer exp2.t.destroy(self.alloc);
+                defer exp2.t.destroy(self.alloc);
 
                 try self.consume(tt.COLON);
 
                 var exp3 = try self.parseTernaryExpression();
-                errdefer exp3.t.destroy(self.alloc);
+                defer exp3.t.destroy(self.alloc);
+
+                // TODO: Fix memory leak.
+                var t: *types.Type = types.leastSupertype(self.alloc, exp2.t, exp3.t) orelse {
+                    self.report(tok, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ exp2.t.str(), exp3.t.str() }, true, true);
+                    return SyntaxError.TypeError;
+                };
 
                 // TODO: exp2.t and exp3.t must have common supertype, TypeError otherwise.
                 if (exp2.hasLValue and exp3.hasLValue and exp2.lt.equals(exp3.lt.*)) {
                     if (!exp2.lt.equals(types.Type{ .simple = types.SimpleType.UNIT })) {}
                 }
+
+                // Destroy the previous type and replace it with the new supertype.
+                exp.t.destroy(self.alloc);
+                exp.t = t;
 
                 // TODO: Set expression attributes.
                 break :blk exp;
@@ -637,17 +665,26 @@ pub const Parser = struct {
                 self.consume(tt.QUESTION_MARK) catch unreachable;
 
                 var exp2 = try self.parseExpression();
-                errdefer exp2.t.destroy(self.alloc);
+                defer exp2.t.destroy(self.alloc);
 
                 try self.consume(tt.COLON);
 
                 var exp3 = try self.parseTernaryExpression();
-                errdefer exp3.t.destroy(self.alloc);
+                defer exp3.t.destroy(self.alloc);
+
+                var t: *types.Type = types.leastSupertype(self.alloc, exp2.t, exp3.t) orelse {
+                    self.report(tok, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ exp2.t.str(), exp3.t.str() }, true, true);
+                    return SyntaxError.TypeError;
+                };
 
                 // TODO: exp2.t and exp3.t must have common supertype, TypeError otherwise.
                 if (exp2.hasLValue and exp3.hasLValue and exp2.lt.equals(exp3.lt.*)) {
                     if (!exp2.lt.equals(types.Type{ .simple = types.SimpleType.UNIT })) {}
                 }
+
+                // Destroy the previous type and replace it with the new supertype.
+                exp.t.destroy(self.alloc);
+                exp.t = t;
 
                 break :blk exp;
             },
@@ -720,9 +757,11 @@ pub const Parser = struct {
             var yExp = try self.parseArithmeticExpression();
             errdefer yExp.t.destroy(self.alloc);
 
-            // TODO: Get supertype of xExp and yExp and store it in t
-            // If there is no common supertype, throw TypeError
-            var t: *types.Type = undefined;
+            // TODO: Fix memory leak.
+            var t: *types.Type = types.leastSupertype(self.alloc, xExp.t, yExp.t) orelse {
+                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.str(), yExp.t.str() }, true, true);
+                return SyntaxError.TypeError;
+            };
 
             var valX: ?[]const u8 = null;
             _ = valX;
@@ -746,15 +785,18 @@ pub const Parser = struct {
                     }
                 },
                 types.TypeTag.constant => {
-                    result = switch (op.tokenType) {
-                        tt.EQL => if (xExp.t.constant.int == yExp.t.constant.int) "1" else "0",
-                        tt.LT => if (xExp.t.constant.int < yExp.t.constant.int) "1" else "0",
-                        tt.GT => if (xExp.t.constant.int > yExp.t.constant.int) "1" else "0",
-                        tt.NEQ => if (xExp.t.constant.int != yExp.t.constant.int) "1" else "0",
-                        tt.LEQ => if (xExp.t.constant.int <= yExp.t.constant.int) "1" else "0",
-                        tt.GEQ => if (xExp.t.constant.int >= yExp.t.constant.int) "1" else "0",
-                        else => unreachable,
-                    };
+                    // TODO: The actual value of the constant is not stored in the type anymore
+                    // but MUST be in the expression itself. Create a helper function that will do
+                    // the appropriate comparisons and return the result, "0" or "1".
+                    // result = switch (op.tokenType) {
+                    //     tt.EQL => if (xExp.t.constant.int == yExp.t.constant.int) "1" else "0",
+                    //     tt.LT => if (xExp.t.constant.int < yExp.t.constant.int) "1" else "0",
+                    //     tt.GT => if (xExp.t.constant.int > yExp.t.constant.int) "1" else "0",
+                    //     tt.NEQ => if (xExp.t.constant.int != yExp.t.constant.int) "1" else "0",
+                    //     tt.LEQ => if (xExp.t.constant.int <= yExp.t.constant.int) "1" else "0",
+                    //     tt.GEQ => if (xExp.t.constant.int >= yExp.t.constant.int) "1" else "0",
+                    //     else => unreachable,
+                    // };
                 },
                 types.TypeTag.array => {
                     // TODO: Generate IR for tt.EQL and tt.NEQ to just compare pointers.
@@ -770,6 +812,9 @@ pub const Parser = struct {
                 accResult = result;
             }
 
+            // Replace the type of the expression with the new supertype.
+            xExp.t.destroy(self.alloc);
+            xExp.t = t;
             // xExp = yExp.clone(); // And destroy yExp?
         }
 
@@ -799,7 +844,7 @@ pub const Parser = struct {
             var op = self.scanner.next();
 
             var yExp = try self.parseUnaryOperators();
-            errdefer yExp.t.destroy(self.alloc);
+            defer yExp.t.destroy(self.alloc);
 
             if (yExp.t.isArray() or yExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
                 self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.str() }, true, true);
@@ -807,9 +852,10 @@ pub const Parser = struct {
                 return SyntaxError.TypeError;
             }
 
-            // TODO: Get supertype of xExp and yExp and store it in t
-            // If there is no common supertype, throw TypeError
-            var t: *types.Type = undefined;
+            var t: *types.Type = types.leastSupertype(self.alloc, xExp.t, yExp.t) orelse {
+                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.str(), yExp.t.str() }, true, true);
+                return SyntaxError.TypeError;
+            };
 
             if (t.equals(types.Type{ .simple = types.SimpleType.BOOL }) and op.tokenType != tt.B_AND and op.tokenType != tt.B_OR and op.tokenType != tt.B_XOR) {
                 self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
@@ -823,21 +869,22 @@ pub const Parser = struct {
                 return SyntaxError.TypeError;
             }
 
-            // TODO: This fails for `i32 main() { 5 + 3; }` since we've not implemented the finding of common supertype,
-            // therefore `t` is undefined.
             if (t.isConstant()) {
-                t.constant.int = switch (op.tokenType) {
-                    tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
-                    tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
-                    // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
-                    // compiler error: error: expected type 'u7', found 'i128'
-                    // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
-                    // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
-                    tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
-                    tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
-                    tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
-                    else => unreachable,
-                };
+                // TODO: The actual value of the constant is not stored in the type anymore
+                // but MUST be in the expression itself. Create a helper function that will do
+                // the appropriate comparisons and return the result.
+                // t.constant.int = switch (op.tokenType) {
+                //     tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
+                //     tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
+                //     // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
+                //     // compiler error: error: expected type 'u7', found 'i128'
+                //     // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
+                //     // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
+                //     tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
+                //     tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
+                //     tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
+                //     else => unreachable,
+                // };
                 // TODO: Set expression attributes.
             } else {
                 var xVal = "";
@@ -848,6 +895,9 @@ pub const Parser = struct {
                 // TODO: Emit IR depending on the operation and expression type.
                 // TODO: Set expression attributes.
             }
+            // Replace the type of the expression with the new supertype.
+            xExp.t.destroy(self.alloc);
+            xExp.t = t;
         }
         // TODO: Set expression attributes.
         return xExp;
@@ -871,7 +921,9 @@ pub const Parser = struct {
                 }
 
                 if (exp.t.isConstant()) {
-                    exp.t.constant.int = -exp.t.constant.int;
+                    // TODO: The actual value of the constant is not stored in the type anymore
+                    // but MUST be in the expression itself.
+                    // exp.t.constant.int = -exp.t.constant.int;
                 } else {
                     // TODO: Emit IR depending on the operation and expression type.
                     // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
@@ -893,7 +945,9 @@ pub const Parser = struct {
                 }
 
                 if (exp.t.isConstant()) {
-                    exp.t.constant.int = ~exp.t.constant.int;
+                    // TODO: The actual value of the constant is not stored in the type anymore
+                    // but MUST be in the expression itself.
+                    // exp.t.constant.int = ~exp.t.constant.int;
                 } else {
                     // TODO: Emit IR depending on the operation and expression type.
                     // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
@@ -902,11 +956,7 @@ pub const Parser = struct {
                 }
                 return exp;
             },
-            else => {
-                var exp = try self.parseArithmeticExpressionsLower();
-                errdefer exp.t.destroy(self.alloc);
-                return exp;
-            },
+            else => return self.parseArithmeticExpressionsLower(),
         };
     }
 
@@ -920,7 +970,7 @@ pub const Parser = struct {
             return xExp;
         }
 
-        if (!xExp.t.isArray() or xExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+        if (xExp.t.isArray() or xExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT }) or xExp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
             self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.str() }, true, true);
             // TODO: Does it make sense in this case to continue parsing?
             return SyntaxError.TypeError;
@@ -931,39 +981,46 @@ pub const Parser = struct {
         while (tt.isHigherPrioArithmetic(self.scanner.peek().tokenType)) {
             var op = self.scanner.next();
             var yExp = try self.parseArrayIndexingAndPrefixExpressions();
-            errdefer yExp.t.destroy(self.alloc);
+            defer yExp.t.destroy(self.alloc);
 
-            if (!yExp.t.isArray() or yExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+            if (yExp.t.isArray() or yExp.t.equals(types.Type{ .simple = types.SimpleType.UNIT }) or yExp.t.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                 self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ op.symbol, yExp.t.str() }, true, true);
                 // TODO: Does it make sense in this case to continue parsing?
                 return SyntaxError.TypeError;
             }
 
-            // TODO: Get supertype of xExp and yExp and store it in t
-            // If there is no common supertype, throw TypeError
-            var t: *types.Type = undefined;
+            var t: *types.Type = types.leastSupertype(self.alloc, xExp.t, yExp.t) orelse {
+                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.str(), yExp.t.str() }, true, true);
+                return SyntaxError.TypeError;
+            };
 
             if (t.isConstant()) {
-                t.constant.int = switch (op.tokenType) {
-                    tt.MUL => xExp.t.constant.int * yExp.t.constant.int,
-                    tt.QUO => if (yExp.t.constant.int == 0) blk: {
-                        self.report(tok, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true);
-                        // Instead of dividing, just return dummy value 1 to continue with the parsing.
-                        break :blk 1;
-                    } else @divExact(xExp.t.constant.int, yExp.t.constant.int),
-                    tt.REM => if (yExp.t.constant.int == 0) blk: {
-                        self.report(tok, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true);
-                        // Instead of dividing, just return dummy value 1 to continue with the parsing.
-                        break :blk 1;
-                    } else @rem(xExp.t.constant.int, yExp.t.constant.int),
-                    else => unreachable,
-                };
+                // TODO: The actual value of the constant is not stored in the type anymore
+                // but MUST be in the expression itself.
+                // t.constant.int = switch (op.tokenType) {
+                //     tt.MUL => xExp.t.constant.int * yExp.t.constant.int,
+                //     tt.QUO => if (yExp.t.constant.int == 0) blk: {
+                //         self.report(tok, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true);
+                //         // Instead of dividing, just return dummy value 1 to continue with the parsing.
+                //         break :blk 1;
+                //     } else @divExact(xExp.t.constant.int, yExp.t.constant.int),
+                //     tt.REM => if (yExp.t.constant.int == 0) blk: {
+                //         self.report(tok, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true);
+                //         // Instead of dividing, just return dummy value 1 to continue with the parsing.
+                //         break :blk 1;
+                //     } else @rem(xExp.t.constant.int, yExp.t.constant.int),
+                //     else => unreachable,
+                // };
             } else {
                 // TODO: Emit IR depending on the operation and expression type.
                 // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
                 // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
                 // since there is no i128.
             }
+
+            // Replace the type of the expression with the new supertype.
+            xExp.t.destroy(self.alloc);
+            xExp.t = t;
         }
         return xExp;
     }
@@ -993,6 +1050,7 @@ pub const Parser = struct {
 
                     // TODO: Emit IR.
                     // TODO: Set expression attributes.
+                    exp.semiMustFollow = true;
                 },
                 tt.HASH => {
                     self.consume(tt.HASH) catch unreachable;
@@ -1000,9 +1058,14 @@ pub const Parser = struct {
                         self.report(tok, reporter.Level.ERROR, "must be l-value in order to be dereferenced", .{}, true, true);
                         return SyntaxError.TypeError;
                     }
+
                     // TODO: Set expression attributes.
+                    exp.t = types.Array.create(self.alloc, 0, exp.t);
+                    exp.hasLValue = false;
                 },
                 tt.LBRACK => {
+                    // TODO: Type of the expression is the first thing to be done here.
+
                     self.consume(tt.LBRACK) catch unreachable;
                     if (!exp.t.isArray()) {
                         self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.str()}, true, true);
@@ -1072,20 +1135,17 @@ pub const Parser = struct {
                 return self.parseBody();
             },
             tt.LPAREN => {
-                // The pre-prepared expression is not needed.
-
                 self.consume(tt.LPAREN) catch unreachable;
 
                 var exp = try self.parseExpression();
                 errdefer exp.t.destroy(self.alloc);
-
                 exp.semiMustFollow = true;
+
                 try self.consume(tt.RPAREN);
+
                 return exp;
             },
             tt.IDENT => {
-                // The pre-prepared expression is not needed.
-
                 const ident = self.consumeGet(tt.IDENT) catch unreachable;
                 if (self.st.functionDefined(ident.symbol)) {
                     return try self.parseFunctionCall(ident);
@@ -1096,43 +1156,50 @@ pub const Parser = struct {
                     };
 
                     if (s.t.isUnit()) {
-                        return Expression{ .t = s.t, .hasLValue = true };
+                        // TODO: Set expression attributes.
+                        return Expression{
+                            .t = s.t.clone(self.alloc),
+                            .hasLValue = true,
+                        };
                     }
                     // TODO: Set expression attributes.
-                    return Expression{};
+                    return Expression{
+                        .t = s.t.clone(self.alloc),
+                    };
                 }
             },
             tt.C_INT => {
                 const int = self.consumeGet(tt.C_INT) catch unreachable;
                 var value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
+                _ = value;
+                // TODO: Save the actual value in the expression.
 
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .constant = types.Constant{ .int = value } };
-                return exp;
+                return Expression{ .t = types.Constant.create(self.alloc, types.ConstantType.int) };
             },
             tt.C_FLOAT => {
                 const int = self.consumeGet(tt.C_INT) catch unreachable;
                 var value = std.fmt.parseFloat(f64, int.symbol) catch unreachable;
+                _ = value;
+                // TODO: Save the actual value in the expression.
 
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .constant = types.Constant{ .float = value } };
-                return exp;
+                return Expression{ .t = types.Constant.create(self.alloc, types.ConstantType.float) };
             },
             tt.C_NULL => {
                 self.consume(tt.C_NULL) catch unreachable;
 
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .array = types.Array{} };
-                return exp;
+                // TODO: What type should the array carry if we're talking about nulls?
+                return Expression{
+                    .t = types.Array.create(self.alloc, 0, types.SimpleType.create(self.alloc, types.SimpleType.UNIT)),
+                };
             },
             tt.C_BOOL => {
                 const boolean = self.consumeGet(tt.C_BOOL) catch unreachable;
                 var value = if (std.mem.eql(u8, boolean.symbol, "true")) "1" else if (std.mem.eql(u8, boolean.symbol, "false")) "0" else unreachable;
 
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .simple = types.SimpleType.BOOL };
-                exp.rValue = value;
-                return exp;
+                return Expression{
+                    .t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
+                    .rValue = value,
+                };
             },
             tt.AT => {
                 self.consume(tt.AT) catch unreachable;
@@ -1162,21 +1229,20 @@ pub const Parser = struct {
                     self.report(char, reporter.Level.ERROR, "'{s}' is not ASCII-encoded", .{char.symbol}, true, true);
                     return SyntaxError.TypeError;
                 }
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .simple = types.SimpleType.U8 };
-                exp.rValue = char.symbol;
-                return exp;
+
+                return Expression{
+                    .t = types.SimpleType.create(self.alloc, types.SimpleType.U8),
+                    .rValue = char.symbol,
+                };
             },
             tt.C_STRING => {
                 const string = self.consumeGet(tt.C_STRING) catch unreachable;
                 _ = string;
                 // TODO: Emit IR to store the string.
-                var exp = Expression{ .t = try self.alloc.create(types.Type) };
-                exp.t.* = types.Type{ .array = types.Array{ .dimensions = 1 } };
-                exp.t.array.ofType = self.alloc.create(types.Type) catch unreachable;
-                exp.t.array.ofType.* = types.Type{ .simple = types.SimpleType.U8 };
                 // TODO: Set expression attributes.
-                return exp;
+                return Expression{
+                    .t = types.Array.create(self.alloc, 1, types.SimpleType.create(self.alloc, types.SimpleType.U8)),
+                };
             },
             else => {
                 self.report(next, reporter.Level.ERROR, "expected '{s}', '(', identifier, function call or a constant value but got '{s}' instead", .{ tt.LBRACE.str(), next.tokenType.str() }, true, true);
@@ -1207,7 +1273,9 @@ pub const Parser = struct {
         // TODO: Emit IR.
         // TODO: Set expression attributes.
 
-        return Expression{};
+        return Expression{
+            .t = funcSymbol.t.clone(self.alloc),
+        };
     }
 
     fn consume(self: *Parser, want: tt) SyntaxError!void {

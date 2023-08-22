@@ -113,6 +113,7 @@ test "parse invalid syntactic constructs" {
     const cases = [_]testCase{
         .{ .input = "i32 main() { 5 }}", .err = "expected type, found '}' instead" },
         // .{ .input = "i32 main() {{ 5 }", .err = "expected type, found '}' instead" },
+        // .{ .input = "i32 main() { i32 a = 19 + 3 + a;}", .err = "TODO" },
     };
 
     for (cases) |tc| {

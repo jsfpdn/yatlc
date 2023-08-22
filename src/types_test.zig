@@ -36,6 +36,12 @@ test "test finding supertypes" {
             .fst = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8),
             .snd = t.SimpleType.create(std.testing.allocator, t.SimpleType.UNIT),
         },
+        .{
+            .name = "const+const=>const",
+            .fst = t.Constant.create(std.testing.allocator, t.ConstantType.float),
+            .snd = t.Constant.create(std.testing.allocator, t.ConstantType.float),
+            .want = t.Constant.create(std.testing.allocator, t.ConstantType.float),
+        },
     };
 
     defer for (cases) |tc| {
@@ -72,7 +78,7 @@ pub fn expectEqualDeep(want: *t.Type, got: *t.Type) !void {
     std.testing.expectEqual(@intFromEnum(want.*), @intFromEnum(got.*)) catch return testErrors.ExpectedEqual;
     switch (want.*) {
         t.TypeTag.simple => |wantS| std.testing.expectEqual(wantS, got.simple) catch return testErrors.ExpectedEqual,
-        t.TypeTag.constant => |wantC| std.testing.expectEqual(wantC.int, got.constant.int) catch return testErrors.ExpectedEqual,
+        t.TypeTag.constant => |wantC| std.testing.expectEqual(wantC.constType, got.constant.constType) catch return testErrors.ExpectedEqual,
         t.TypeTag.array => |wantA| {
             std.testing.expectEqual(wantA.dimensions, got.array.dimensions) catch return testErrors.ExpectedEqual;
             try expectEqualDeep(wantA.ofType, got.array.ofType);

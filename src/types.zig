@@ -149,9 +149,19 @@ pub const Func = struct {
     }
 };
 
+pub const ConstantType = enum(u8) {
+    int,
+    float,
+};
+
 pub const Constant = struct {
-    int: i128 = 0,
-    float: f64 = 0.0,
+    constType: ConstantType,
+
+    pub fn create(alloc: std.mem.Allocator, constantType: ConstantType) *Type {
+        var t = alloc.create(Type) catch unreachable;
+        t.* = Type{ .constant = Constant{ .constType = constantType } };
+        return t;
+    }
 };
 
 pub const TypeTag = enum(u8) {
@@ -180,7 +190,7 @@ pub const Type = union(TypeTag) {
         var t = alloc.create(Type) catch unreachable;
         t.* = switch (self.*) {
             TypeTag.simple => |simple| Type{ .simple = simple },
-            TypeTag.constant => |constant| Type{ .constant = Constant{ .int = constant.int, .float = constant.float } },
+            TypeTag.constant => |constant| Type{ .constant = Constant{ .constType = constant.constType } },
             TypeTag.array => |array| Type{ .array = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
             TypeTag.func => |func| blk: {
                 var newFunc = Func{
@@ -202,7 +212,7 @@ pub const Type = union(TypeTag) {
 
         return switch (self) {
             TypeTag.simple => |simple| simple == other.simple,
-            TypeTag.constant => |constant| constant.int == other.constant.int,
+            TypeTag.constant => |constant| constant.constType == other.constant.constType,
             TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
             TypeTag.func => |func| blk: {
                 if (func.args.items.len != other.func.args.items.len or func.defined != other.func.defined or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
