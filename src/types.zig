@@ -41,6 +41,8 @@ pub const SimpleType = enum(u8) {
         "unit",
     };
 
+    const widths = [@typeInfo(SimpleType).Enum.fields.len]u8{ 64, 32, 16, 8, 64, 32, 16, 8, 32, 64, 1, 0 };
+
     pub fn str(self: SimpleType) []const u8 {
         return SimpleTypeTable[@intFromEnum(self)];
     }
@@ -59,6 +61,10 @@ pub const SimpleType = enum(u8) {
         }
 
         return null;
+    }
+
+    pub fn width(self: SimpleType) u8 {
+        return SimpleType.widths[@intFromEnum(self)];
     }
 
     pub fn isType(name: []const u8) bool {
@@ -82,11 +88,21 @@ pub const SimpleType = enum(u8) {
             else => true,
         };
     }
+
+    pub fn isSigned(st: SimpleType) bool {
+        return @intFromEnum(st) >= @intFromEnum(SimpleType.I64) and @intFromEnum(st) <= @intFromEnum(SimpleType.I8);
+    }
 };
 
 pub const Array = struct {
     dimensions: usize = 0,
     ofType: *Type = undefined,
+
+    pub fn create(alloc: std.mem.Allocator, dimensions: usize, ofType: *Type) *Type {
+        var t = alloc.create(Type) catch unreachable;
+        t.* = Type{ .array = Array{ .dimensions = dimensions, .ofType = ofType } };
+        return t;
+    }
 
     fn destroy(self: *Array, alloc: std.mem.Allocator) void {
         self.*.ofType.destroy(alloc);
@@ -202,7 +218,14 @@ pub const Type = union(TypeTag) {
 
     pub fn isArray(self: Type) bool {
         return switch (self) {
-            TypeTag.array => true,
+            TypeTag.array => |array| array.dimensions >= 1,
+            else => false,
+        };
+    }
+
+    pub fn isPointer(self: Type) bool {
+        return switch (self) {
+            TypeTag.array => |array| array.dimensions == 0,
             else => false,
         };
     }
@@ -224,6 +247,28 @@ pub const Type = union(TypeTag) {
     pub fn isUnit(self: Type) bool {
         return switch (self) {
             TypeTag.simple => |simple| simple == SimpleType.UNIT,
+            else => false,
+        };
+    }
+
+    pub fn isBool(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| st == SimpleType.BOOL,
+            TypeTag.constant => true,
+            else => false,
+        };
+    }
+
+    pub fn isDouble(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| st == SimpleType.DOUBLE,
+            else => false,
+        };
+    }
+
+    pub fn isFloat(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| st == SimpleType.FLOAT,
             else => false,
         };
     }
@@ -254,14 +299,47 @@ pub const Type = union(TypeTag) {
     }
 };
 
-test "array type does not leak memory" {
-    var innerT = try std.testing.allocator.create(Type);
-    innerT.* = Type{ .simple = SimpleType.I8 };
+pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type) ?*Type {
+    var fst = fstParam;
+    var snd = sndParam;
 
-    var t = try std.testing.allocator.create(Type);
-    t.* = Type{ .array = Array{
-        .ofType = innerT,
-    } };
+    if (fst.equals(snd.*)) return fst.clone(alloc);
+    if (fst.isUnit() or snd.isUnit()) return null;
+    if (fst.isBool() or snd.isBool()) return null;
+    if (snd.isPointer()) {
+        if (fst.isArray()) return fst.clone(alloc);
+        return null;
+    }
 
-    defer t.destroy(std.testing.allocator);
+    // TODO: What if fst.isPointer and snd.isArray?
+    if (fst.isArray() or snd.isArray()) return null;
+    if (snd.isConstant()) {
+        var t = fst;
+        fst = snd;
+        snd = t;
+    }
+
+    if (fst.isConstant()) {
+        if (snd.isIntegral()) return snd.clone(alloc);
+        return null;
+    }
+
+    if (fst.isDouble() or snd.isDouble()) return SimpleType.create(alloc, SimpleType.DOUBLE);
+    if (fst.isFloat() or snd.isFloat()) return SimpleType.create(alloc, SimpleType.FLOAT);
+
+    if (fst.simple.width() < snd.simple.width() or (fst.simple.width() == snd.simple.width() and fst.simple.isSigned())) {
+        var t = fst;
+        fst = snd;
+        snd = t;
+    }
+
+    if (fst.simple.isSigned() or !snd.simple.isSigned()) return fst.clone(alloc);
+
+    return switch (fst.simple) {
+        SimpleType.U64 => null,
+        SimpleType.U32 => SimpleType.create(alloc, SimpleType.I64),
+        SimpleType.U16 => SimpleType.create(alloc, SimpleType.I64),
+        SimpleType.U8 => SimpleType.create(alloc, SimpleType.I64),
+        else => unreachable,
+    };
 }

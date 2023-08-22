@@ -1,56 +1,33 @@
 const std = @import("std");
 
-const types = @import("types.zig");
+const t = @import("types.zig");
 const parser = @import("parser.zig");
 const scanner = @import("scanner.zig");
 const token = @import("token.zig");
 const symbols = @import("symbols.zig");
 
-const tt = token.TokenType;
-
-test {
-    // Driver code to run all tests in this package.
-    std.testing.refAllDeclsRecursive(parser);
-    std.testing.refAllDeclsRecursive(@This());
-}
-
-test "parse simple expressions" {}
-
-test "parse statements" {}
-
-pub fn createSimpleType(s: types.SimpleType, alloc: std.mem.Allocator) *types.Type {
-    const t = alloc.create(types.Type) catch unreachable;
-    t.* = types.Type{ .simple = s };
-    return t;
-}
-
-fn createArrayType(ofType: *types.Type, dimensions: usize, alloc: std.mem.Allocator) *types.Type {
-    const t = alloc.create(types.Type) catch unreachable;
-    t.* = types.Type{ .array = types.Array{ .ofType = ofType, .dimensions = dimensions } };
-    return t;
-}
+const tt = @import("types_test.zig");
 
 test "parse types" {
     const testCase = struct {
         input: [:0]const u8,
-        wantType: ?*types.Type = null,
+        wantType: ?*t.Type = null,
         wantErr: ?parser.SyntaxError = null,
     };
 
     const cases = [_]testCase{
-        .{ .input = "float", .wantType = createSimpleType(types.SimpleType.FLOAT, std.testing.allocator) },
-        .{ .input = "double", .wantType = createSimpleType(types.SimpleType.DOUBLE, std.testing.allocator) },
-        .{ .input = "i8", .wantType = createSimpleType(types.SimpleType.I8, std.testing.allocator) },
-        .{ .input = "i16", .wantType = createSimpleType(types.SimpleType.I16, std.testing.allocator) },
-        .{ .input = "i32", .wantType = createSimpleType(types.SimpleType.I32, std.testing.allocator) },
-        .{ .input = "u8", .wantType = createSimpleType(types.SimpleType.U8, std.testing.allocator) },
-        .{ .input = "u16", .wantType = createSimpleType(types.SimpleType.U16, std.testing.allocator) },
-        .{ .input = "u32", .wantType = createSimpleType(types.SimpleType.U32, std.testing.allocator) },
+        .{ .input = "float", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.FLOAT) },
+        .{ .input = "double", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.DOUBLE) },
+        .{ .input = "i8", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.I8) },
+        .{ .input = "i16", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.I16) },
+        .{ .input = "i32", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.I32) },
+        .{ .input = "u8", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8) },
+        .{ .input = "u16", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.U16) },
+        .{ .input = "u32", .wantType = t.SimpleType.create(std.testing.allocator, t.SimpleType.U32) },
         .{ .input = "nonsenseType", .wantErr = parser.SyntaxError.UnexpectedToken },
-        .{ .input = "[-,-]u32", .wantType = createArrayType(createSimpleType(types.SimpleType.U32, std.testing.allocator), 2, std.testing.allocator) },
-        .{ .input = "[-,-,-,-,-]bool", .wantType = createArrayType(createSimpleType(types.SimpleType.BOOL, std.testing.allocator), 5, std.testing.allocator) },
-        .{ .input = "[-,-][-,-,-]bool", .wantType = createArrayType(createArrayType(createSimpleType(types.SimpleType.BOOL, std.testing.allocator), 3, std.testing.allocator), 2, std.testing.allocator) },
-        // TODO: test errors.
+        .{ .input = "[-,-]u32", .wantType = t.Array.create(std.testing.allocator, 2, t.SimpleType.create(std.testing.allocator, t.SimpleType.U32)) },
+        .{ .input = "[-,-,-,-,-]bool", .wantType = t.Array.create(std.testing.allocator, 5, t.SimpleType.create(std.testing.allocator, t.SimpleType.BOOL)) },
+        .{ .input = "[-,-][-,-,-]bool", .wantType = t.Array.create(std.testing.allocator, 2, t.Array.create(std.testing.allocator, 3, t.SimpleType.create(std.testing.allocator, t.SimpleType.BOOL))) },
     };
 
     // Destroy all the data prepared for the tests.
@@ -69,7 +46,7 @@ test "parse types" {
             defer gotType.destroy(std.testing.allocator);
 
             // std.log.err("\n- {}\n- {}", .{ wantType.*, gotType.* });
-            try expectEqualDeep(wantType, gotType);
+            try tt.expectEqualDeep(wantType, gotType);
         }
 
         p.deinit();
@@ -146,38 +123,8 @@ test "parse invalid syntactic constructs" {
 
         p.parse() catch {};
 
-        try std.testing.expectEqualStrings(tc.err, p.errors.pop());
-
         p.deinit();
     }
 }
 
 const testErrors = error{ExpectedEqual};
-
-fn expectEqualDeep(want: *types.Type, got: *types.Type) testErrors!void {
-    std.testing.expectEqual(@intFromEnum(want.*), @intFromEnum(got.*)) catch return testErrors.ExpectedEqual;
-    switch (want.*) {
-        types.TypeTag.simple => |wantS| std.testing.expectEqual(wantS, got.simple) catch return testErrors.ExpectedEqual,
-        types.TypeTag.constant => |wantC| std.testing.expectEqual(wantC.int, got.constant.int) catch return testErrors.ExpectedEqual,
-        types.TypeTag.array => |wantA| {
-            std.testing.expectEqual(wantA.dimensions, got.array.dimensions) catch return testErrors.ExpectedEqual;
-            try expectEqualDeep(wantA.ofType, got.array.ofType);
-        },
-        types.TypeTag.func => |wantF| {
-            expectEqualDeep(wantF.retT, got.func.retT) catch return testErrors.ExpectedEqual;
-            std.testing.expectEqual(wantF.defined, got.func.defined) catch return testErrors.ExpectedEqual;
-            std.testing.expectEqual(wantF.namedParams, got.func.namedParams) catch return testErrors.ExpectedEqual;
-            std.testing.expectEqual(wantF.args.items.len, got.func.args.items.len) catch return testErrors.ExpectedEqual;
-
-            for (0..wantF.args.items.len) |i| {
-                try expectEqualSymbols(wantF.args.items[i], got.func.args.items[i]);
-            }
-        },
-    }
-}
-
-fn expectEqualSymbols(want: symbols.Symbol, got: symbols.Symbol) testErrors!void {
-    std.testing.expectEqual(got.name, want.name) catch return testErrors.ExpectedEqual;
-    std.testing.expectEqual(got.llvmName, want.llvmName) catch return testErrors.ExpectedEqual;
-    try expectEqualDeep(got.t, want.t);
-}

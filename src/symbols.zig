@@ -135,37 +135,3 @@ pub const SymbolTable = struct {
         return self.scopeStack.items[0].valueIterator();
     }
 };
-
-test "get on empty SymbolTable does not fail" {
-    var st = SymbolTable.init(std.testing.allocator);
-    defer st.deinit();
-
-    try std.testing.expectEqual(st.get("var1"), null);
-}
-
-test "basic SymbolTable usage" {
-    const pt = @import("parser_test.zig");
-
-    var st = SymbolTable.init(std.testing.allocator);
-    defer st.deinit();
-
-    try st.open();
-
-    // Insert symbol and look it up.
-    try st.insert(Symbol{ .name = "var1", .t = pt.createSimpleType(types.SimpleType.U8, std.testing.allocator) });
-    try std.testing.expectEqual(st.get("var1").?.name, "var1");
-
-    // Creating new scope does not hide symbol in already existing scopes.
-    try st.open();
-    try std.testing.expectEqual(st.get("var1").?.name, "var1");
-
-    // Add symbol to the innermost scope.
-    try st.insert(Symbol{ .name = "var2", .t = pt.createSimpleType(types.SimpleType.U8, std.testing.allocator) });
-    try std.testing.expectEqual(st.get("var2").?.name, "var2");
-
-    // Closing the scope destroys the symbol.
-    st.close();
-    try std.testing.expectEqual(st.get("var2"), null);
-
-    st.close();
-}
