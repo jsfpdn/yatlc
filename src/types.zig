@@ -264,7 +264,7 @@ pub const Type = union(TypeTag) {
     pub fn isBool(self: Type) bool {
         return switch (self) {
             TypeTag.simple => |st| st == SimpleType.BOOL,
-            TypeTag.constant => true,
+            TypeTag.constant => false,
             else => false,
         };
     }

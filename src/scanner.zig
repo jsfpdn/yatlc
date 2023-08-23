@@ -150,7 +150,7 @@ pub const Scanner = struct {
     fn parseIdentOrKeyword(self: *Scanner, tok: *Token) void {
         tok.tokenType = TokenType.IDENT;
         self.parseIdent(tok);
-        if (std.mem.eql(u8, "true", self.symbol(tok.*)) or std.mem.eql(u8, "true", self.symbol(tok.*))) {
+        if (std.mem.eql(u8, "true", self.symbol(tok.*)) or std.mem.eql(u8, "false", self.symbol(tok.*))) {
             tok.tokenType = token.TokenType.C_BOOL;
         } else if (std.mem.eql(u8, "not", self.symbol(tok.*))) {
             tok.tokenType = token.TokenType.NEG;

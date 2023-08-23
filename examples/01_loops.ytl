@@ -1,0 +1,20 @@
+
+bool helper(i32 a, i32 b) {}
+
+i32 main() {
+
+    while (true) {
+        do {
+            for (i32 i = 123, true, i) {
+                break;
+            }
+            continue;
+        } while (true)
+
+        if (false) {
+            break;
+        } else {
+            continue;
+        }
+    }
+}
