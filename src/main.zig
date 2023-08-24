@@ -87,6 +87,7 @@ pub fn main() !void {
         const tFile = std.fmt.allocPrint(allocator, "{s}.t", .{filename}) catch |err| {
             fatal("could not prepare a .t file: {s}", .{@errorName(err)});
         };
+        defer allocator.free(tFile);
         const f = std.fs.cwd().createFile(tFile, .{ .read = false, .truncate = true }) catch |err| {
             fatal("could not create a .t file: {s}", .{@errorName(err)});
         };

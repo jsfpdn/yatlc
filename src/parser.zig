@@ -46,7 +46,10 @@ pub const Parser = struct {
 
     // TODO:
     // * IR emitter
+    // * arithmetic expressions (chaining operators)
     // * set up returnType correctly when parsing function definition.
+    // * type conversions
+    // * constant folding
     // * handle comments properly
     // * global variables
 
@@ -329,7 +332,6 @@ pub const Parser = struct {
                     var exp1 = try self.parseSubExpression();
                     exp.semiMustFollow = exp1.semiMustFollow;
 
-                    exp.destroy(self.alloc);
                     exp.t = exp1.t;
                     break :blk exp;
                 },
@@ -539,6 +541,7 @@ pub const Parser = struct {
 
     fn parseBody(self: *Parser) SyntaxError!Expression {
         self.st.open() catch unreachable;
+        defer self.st.close();
         try self.consume(tt.LBRACE);
 
         var exp = try self.parseExpression();
@@ -1376,16 +1379,20 @@ pub const Parser = struct {
     }
 
     fn parseFunctionCall(self: *Parser, ident: token.Token) SyntaxError!Expression {
+        // TODO: What if we parsed all the arguments first until we reach ')' and then
+        // type check and emit? This way, we'll get friendlier error reporting when
+        // the function call has wrong number of arguments.
         try self.consume(tt.LPAREN);
 
         var funcSymbol = self.st.get(ident.symbol) orelse unreachable;
 
         for (0..funcSymbol.t.func.args.items.len, funcSymbol.t.func.args.items) |i, arg| {
             var exp = try self.parseExpression();
+            defer exp.destroy(self.alloc);
             if (!exp.t.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
                 // TODO: Prepare LLVM argument by converting types if necessary
             } else if (!arg.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
-                self.report(arg.location, reporter.Level.ERROR, "argument '{s}' must be of type '{s}' instead of '{s}'", .{ arg.name, types.SimpleType.UNIT.str(), arg.t.str() }, true, true);
+                // TODO: Fix error reporting.
                 return SyntaxError.TypeError;
             }
 

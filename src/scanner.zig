@@ -494,6 +494,7 @@ pub const Scanner = struct {
 
     /// Emit the supplied token to a writer if the writer was provided.
     fn emitToken(self: *Scanner, tok: Token) void {
+        // TODO: Fix emitting tokens.
         if (self.tokenWriter) |writer| {
             if (self.lastToken) |ltok| {
                 if (ltok.sourceLoc.line < tok.sourceLoc.line) {
