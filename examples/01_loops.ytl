@@ -1,7 +1,19 @@
 
-bool helper(i32 a, i32 b) {}
+bool helper(i32, i32);
 
-i32 main() {
+bool helper(i32 a, i32 b) {
+    return false;
+}
+
+i32 main(i32 argc, [-][-]u8 argv) {
+    [-,-,-][-]u8 pole;
+
+    unit a;
+    unit b;
+
+    bool value = true 
+        ? true
+        : false;
 
     while (true) {
         do {
@@ -16,5 +28,10 @@ i32 main() {
         } else {
             continue;
         }
+    }
+
+    {
+        bool a = helper(42, 22);
+        bool c = a;
     }
 }

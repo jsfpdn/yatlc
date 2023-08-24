@@ -90,8 +90,8 @@ pub const Parser = struct {
         var it = self.st.globalIterator();
         while (it.next()) |s| {
             switch (s.t.*) {
-                types.TypeTag.func => |func| {
-                    if (!func.defined) {
+                types.TypeTag.func => {
+                    if (!s.defined) {
                         self.report(s.location, reporter.Level.ERROR, "function '{s}' is declared but not defined", .{s.name}, true, true);
                     }
                 },
@@ -109,8 +109,6 @@ pub const Parser = struct {
         // 3) function definition: <type> <ident>(<arglist>) <body>
 
         const t = try self.parseType();
-        // errdefer t.destroy(self.alloc);
-
         const ident = try self.consumeGet(tt.IDENT);
 
         var next = self.scanner.next();
@@ -129,6 +127,7 @@ pub const Parser = struct {
                     .llvmName = "TODO",
                     .location = ident,
                     .t = ft,
+                    .defined = false,
                 };
 
                 // Try to parse the function body if it is a function definition.
@@ -171,7 +170,7 @@ pub const Parser = struct {
                     // Close the scope just for the function arguments.
                     self.st.close();
 
-                    fs.t.func.defined = true;
+                    fs.defined = true;
                 } else {
                     try self.consume(tt.SEMICOLON);
                 }
@@ -179,23 +178,26 @@ pub const Parser = struct {
                 // Check that if there's a symbol with the same name, it must be a function with identical
                 // argument types that has been declared but not defined yet.
                 if (self.st.get(ident.symbol)) |s| {
+                    if (s.defined) {
+                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name}, true, true);
+                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name}, false, false);
+                        return SyntaxError.TypeError;
+                    }
+
                     switch (s.t.*) {
                         types.TypeTag.func => |otherFunc| {
                             ft.func.defines(otherFunc) catch |err| {
                                 switch (err) {
-                                    types.Func.DefinitionErrors.AlreadyDefined => {
-                                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name}, true, true);
-                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name}, false, false);
-                                        s.t.func.defined = true; // Mark the declared function as defined in order to not emit unrelated error.
-                                    },
                                     types.Func.DefinitionErrors.ArgTypeMismatch => {
-                                        self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name}, true, true);
+                                        if (fs.defined) {
+                                            self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name}, true, true);
+                                        } else {
+                                            self.report(fs.location, reporter.Level.ERROR, "redaclaration of '{s}' does not match the former declaration", .{fs.name}, true, true);
+                                        }
                                         self.report(s.location, reporter.Level.NOTE, "'{s}' first declared here", .{fs.name}, false, false);
-                                        s.t.func.defined = true; // Mark the declared function as defined in order to not emit unrelated error.
                                         // TODO: Make error reporting better - show where the mismatch is.
                                     },
                                 }
-                                self.emit = false;
 
                                 // TODO: Return better error? We need to return with error
                                 // in order to destroy all the data structures.
@@ -222,7 +224,14 @@ pub const Parser = struct {
                 // t.destroy(self.alloc);
 
                 self.emit = false;
-                self.report(next, reporter.Level.ERROR, "expected either function declaration, definition or global variable definiton", .{}, true, true);
+                self.report(
+                    next,
+                    reporter.Level.ERROR,
+                    "expected either function declaration, definition or global variable definiton",
+                    .{},
+                    true,
+                    true,
+                );
                 return SyntaxError.UnexpectedToken;
             },
         }
@@ -244,6 +253,7 @@ pub const Parser = struct {
 
             var s = symbols.Symbol{
                 .t = try self.parseType(),
+                .defined = true,
             };
 
             errdefer s.t.destroy(self.alloc);
@@ -632,15 +642,9 @@ pub const Parser = struct {
         errdefer if (identType) |it| it.destroy(self.alloc);
 
         var tok = self.scanner.peek();
-        if (std.mem.eql(u8, tok.symbol, "unit")) {
-            try self.consume(tt.IDENT);
-            try self.define(tok.symbol, types.SimpleType.create(self.alloc, types.SimpleType.UNIT), tok);
-            // TODO: Is it possible to continue with parsing even when TypeError occured?
-            // TODO: set expression attributes - type = unit, lvalue...
-            exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
-            errdefer exp.t.destroy(self.alloc);
-        } else if (types.startsType(tok.symbol)) {
+        if (types.startsType(tok.symbol)) {
             // Current token under the cursor is either a simple type or an array type.
+            // TODO: Be careful when typechecking when identType is UNIT.
             identType = try self.parseType();
             identTok = try self.consumeGet(tt.IDENT);
         } else {
@@ -650,6 +654,9 @@ pub const Parser = struct {
 
         var assignTok = self.scanner.peek();
         if (!token.TokenType.isAssignment(assignTok.tokenType)) {
+            if (declaration)
+                try self.declare(identTok.?.symbol, identType.?, identTok.?, false);
+
             return exp;
         }
 
@@ -663,7 +670,7 @@ pub const Parser = struct {
                 defer subExp.destroy(self.alloc);
                 // TODO: Convert subExp to the type of identType.
 
-                try self.define(identTok.?.symbol, identType.?, identTok.?);
+                try self.declare(identTok.?.symbol, identType.?, identTok.?, true);
                 // TODO: Set expression attributes.
                 exp.semiMustFollow = true;
             },
@@ -716,8 +723,8 @@ pub const Parser = struct {
 
     // Defines an identifier in te currently open scope. If a symbol with the same identifier
     // is already defined in the current scope, error is logged instead.
-    fn define(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token) SyntaxError!void {
-        if (self.st.defined(ident)) {
+    fn declare(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token, defined: bool) SyntaxError!void {
+        if (self.st.declared(ident)) {
             var prevDef = self.st.get(ident).?;
             self.report(
                 at,
@@ -735,6 +742,7 @@ pub const Parser = struct {
             .llvmName = "TODO",
             .location = at,
             .t = t,
+            .defined = defined,
         }) catch unreachable;
 
         return;

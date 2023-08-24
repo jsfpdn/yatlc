@@ -112,9 +112,7 @@ pub const Array = struct {
 pub const Func = struct {
     retT: *Type,
     args: std.ArrayList(symbols.Symbol),
-
     namedParams: bool = false,
-    defined: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, retT: *Type) Func {
         var func = Func{
@@ -131,13 +129,12 @@ pub const Func = struct {
         self.retT.destroy(alloc);
     }
 
-    pub const DefinitionErrors = error{ AlreadyDefined, ArgTypeMismatch };
+    pub const DefinitionErrors = error{ArgTypeMismatch};
 
     /// defines checks whether the receiver struct `self` is a valid definition of an already
     /// declared function `func`.
     pub fn defines(self: *Func, funcDecl: Func) DefinitionErrors!void {
         // Self cannot define `func` if `func` is already defined.
-        if (funcDecl.defined) return DefinitionErrors.AlreadyDefined;
         if (self.args.items.len != funcDecl.args.items.len) return DefinitionErrors.ArgTypeMismatch;
 
         for (0..self.args.items.len) |i| {
@@ -196,7 +193,6 @@ pub const Type = union(TypeTag) {
                 var newFunc = Func{
                     .retT = func.retT.clone(alloc),
                     .namedParams = func.namedParams,
-                    .defined = func.defined,
                     .args = std.ArrayList(symbols.Symbol).initCapacity(alloc, func.args.items.len) catch unreachable,
                 };
                 for (func.args.items) |arg| newFunc.args.append(arg.clone(alloc)) catch unreachable;
@@ -215,7 +211,7 @@ pub const Type = union(TypeTag) {
             TypeTag.constant => |constant| constant.constType == other.constant.constType,
             TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
             TypeTag.func => |func| blk: {
-                if (func.args.items.len != other.func.args.items.len or func.defined != other.func.defined or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
+                if (func.args.items.len != other.func.args.items.len or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
                     break :blk false;
                 for (0..func.args.items.len) |i| {
                     if (!func.args.items[i].t.equals(other.func.args.items[i].t.*))

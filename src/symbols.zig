@@ -11,6 +11,7 @@ pub const Symbol = struct {
     llvmName: []const u8 = "",
     location: tokens.Token = undefined,
     t: *types.Type,
+    defined: bool,
 
     pub fn destroy(self: Symbol, alloc: std.mem.Allocator) void {
         self.t.destroy(alloc);
@@ -22,6 +23,7 @@ pub const Symbol = struct {
             .llvmName = self.llvmName,
             .location = self.location,
             .t = self.t.clone(alloc),
+            .defined = self.defined,
         };
     }
 };
@@ -118,8 +120,8 @@ pub const SymbolTable = struct {
         return false;
     }
 
-    // Defined returns whether a symbol with the name is already defined in the currently open scope.
-    pub fn defined(self: *SymbolTable, name: []const u8) bool {
+    // Returns whether a symbol with the name is already declared in the currently open scope.
+    pub fn declared(self: *SymbolTable, name: []const u8) bool {
         if (self.scopeStack.items.len == 0) {
             @panic("ICE: cannot check currently open scope since there are no scopes");
         }
