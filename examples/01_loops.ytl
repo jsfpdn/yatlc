@@ -2,14 +2,27 @@
 bool helper(i32, i32);
 
 bool helper(i32 a, i32 b) {
+    i64 c = 123;
+    i64 d = 0;
+    d += c;
+
     return false;
 }
 
 i32 main(i32 argc, [-][-]u8 argv) {
     [-,-,-][-]u8 pole;
 
+    u8 res = ((pole[1,2,3][1] + pole[3,2,1][42]) * 3) % 12;
+
     unit a;
     unit b;
+
+    if (a != b) {}
+    else if (a == b) {}
+    else {}
+
+    i32 ad = 123;
+    i32 result = (1 + 2 + 3) + ad * 12;
 
     bool value = true 
         ? true
@@ -17,7 +30,7 @@ i32 main(i32 argc, [-][-]u8 argv) {
 
     while (true) {
         do {
-            for (i32 i = 123, true, i) {
+            for (i32 i = 0, i <= 10, i++) {
                 break;
             }
             continue;

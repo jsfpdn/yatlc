@@ -145,18 +145,18 @@ pub const Func = struct {
         }
     }
 };
-
-pub const ConstantType = enum(u8) {
+pub const ConstantTag = enum(u8) {
     int,
     float,
+    bool,
 };
 
-pub const Constant = struct {
-    constType: ConstantType,
+pub const Constant = union {
+    ct: ConstantTag,
 
-    pub fn create(alloc: std.mem.Allocator, constantType: ConstantType) *Type {
+    pub fn create(alloc: std.mem.Allocator, ct: ConstantTag) *Type {
         var t = alloc.create(Type) catch unreachable;
-        t.* = Type{ .constant = Constant{ .constType = constantType } };
+        t.* = Type{ .constant = Constant{ .ct = ct } };
         return t;
     }
 };
@@ -187,7 +187,7 @@ pub const Type = union(TypeTag) {
         var t = alloc.create(Type) catch unreachable;
         t.* = switch (self.*) {
             TypeTag.simple => |simple| Type{ .simple = simple },
-            TypeTag.constant => |constant| Type{ .constant = Constant{ .constType = constant.constType } },
+            TypeTag.constant => |constant| Type{ .constant = Constant{ .ct = constant.ct } },
             TypeTag.array => |array| Type{ .array = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
             TypeTag.func => |func| blk: {
                 var newFunc = Func{
@@ -208,7 +208,7 @@ pub const Type = union(TypeTag) {
 
         return switch (self) {
             TypeTag.simple => |simple| simple == other.simple,
-            TypeTag.constant => |constant| constant.constType == other.constant.constType,
+            TypeTag.constant => |constant| constant.ct == other.constant.ct,
             TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
             TypeTag.func => |func| blk: {
                 if (func.args.items.len != other.func.args.items.len or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
@@ -291,6 +291,13 @@ pub const Type = union(TypeTag) {
         return switch (self) {
             TypeTag.simple => |st| SimpleType.isNumeric(st),
             TypeTag.constant => true,
+            else => false,
+        };
+    }
+
+    pub fn isSigned(self: Type) bool {
+        return switch (self) {
+            TypeTag.simple => |st| SimpleType.isSigned(st),
             else => false,
         };
     }

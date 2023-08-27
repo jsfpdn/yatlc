@@ -25,7 +25,7 @@ test "basic SymbolTable usage" {
     try st.open();
 
     // Insert symbol and look it up.
-    try st.insert(s.Symbol{ .name = "var1", .t = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8) });
+    try st.insert(s.Symbol{ .name = "var1", .t = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8), .defined = true });
     try std.testing.expectEqual(st.get("var1").?.name, "var1");
 
     // Creating new scope does not hide symbol in already existing scopes.
@@ -33,7 +33,7 @@ test "basic SymbolTable usage" {
     try std.testing.expectEqual(st.get("var1").?.name, "var1");
 
     // Add symbol to the innermost scope.
-    try st.insert(s.Symbol{ .name = "var2", .t = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8) });
+    try st.insert(s.Symbol{ .name = "var2", .t = t.SimpleType.create(std.testing.allocator, t.SimpleType.U8), .defined = true });
     try std.testing.expectEqual(st.get("var2").?.name, "var2");
 
     // Closing the scope destroys the symbol.
