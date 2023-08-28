@@ -452,6 +452,27 @@ pub const Scanner = struct {
         }
     }
 
+    fn switch4(self: *Scanner, tok: *Token, ifA: u8, thenA: TokenType, elifB: u8, thenB: TokenType, elifC: u8, thenC: TokenType, elseFollows: TokenType) void {
+        tok.tokenType = elseFollows;
+
+        if (self.peekChar()) |follows| {
+            if (follows == ifA) {
+                tok.tokenType = thenA;
+            } else if (follows == elifB) {
+                tok.tokenType = thenB;
+            } else if (follows == elifC) {
+                tok.tokenType = thenC;
+            } else {
+                return;
+            }
+            tok.bufferLoc.end = self.offset;
+
+            self.advance();
+        } else |err| switch (err) {
+            error.EOF => {},
+        }
+    }
+
     fn eatWhitespace(self: *Scanner) void {
         while (true and !self.eof()) {
             const c = self.peekChar() catch unreachable;

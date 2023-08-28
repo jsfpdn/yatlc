@@ -9,6 +9,15 @@ bool helper(i32 a, i32 b) {
     return false;
 }
 
+bool booleanOperators() {
+    bool a = false;
+    bool b = true;
+
+    a &= false;
+    a |= true;
+    b |= (false and true) and a;
+}
+
 i32 main(i32 argc, [-][-]u8 argv) {
     [-,-,-][-]u8 pole;
 
