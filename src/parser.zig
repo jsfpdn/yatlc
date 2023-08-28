@@ -23,6 +23,8 @@ pub const Expression = struct {
     semiMustFollow: bool = false,
     endsWithReturn: bool = false,
 
+    callsFunction: bool = false,
+
     pub fn destroy(self: Expression, alloc: std.mem.Allocator) void {
         if (self.t) |t| t.destroy(alloc);
         if (self.lt) |lt| lt.destroy(alloc);
@@ -38,6 +40,7 @@ pub const Expression = struct {
             .lValue = self.lValue,
             .semiMustFollow = self.semiMustFollow,
             .endsWithReturn = self.endsWithReturn,
+            .callsFunction = self.callsFunction,
         };
     }
 };
@@ -58,12 +61,10 @@ pub const Parser = struct {
     returnType: ?*types.Type = null,
 
     // TODO:
-    // * IR emitter
-    // * arithmetic expressions (chaining operators)
     // * type conversions
-    // * constant folding
     // * handle comments properly
-    // * global variables
+    // * constant folding
+    // * IR emitter
 
     pub fn init(s: scanner.Scanner, r: ?reporter.Reporter, alloc: std.mem.Allocator) Parser {
         return .{
@@ -126,7 +127,43 @@ pub const Parser = struct {
         var next = self.scanner.next();
         switch (next.tokenType) {
             tt.ASSIGN => {
-                // TODO: self.parseExpression()?
+                errdefer t.destroy(self.alloc);
+
+                var exp = try self.parseSubExpression();
+                defer exp.destroy(self.alloc);
+
+                if (exp.callsFunction) {
+                    self.report(next, reporter.Level.ERROR, "global constant definition cannot call a function", .{}, true, true);
+                    return SyntaxError.TypeError;
+                }
+
+                const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                    switch (err) {
+                        ConvErr.Overflow => self.report(
+                            ident,
+                            reporter.Level.ERROR,
+                            "cannot cast value of type {s} to {s} due to possible overflow",
+                            .{ exp.t.?.str(), t.str() },
+                            true,
+                            true,
+                        ),
+                        ConvErr.NoImplicit => self.report(
+                            ident,
+                            reporter.Level.ERROR,
+                            "cannot cast returned value of type {s} to {s}",
+                            .{ exp.t.?.str(), t.str() },
+                            true,
+                            true,
+                        ),
+                    }
+
+                    return SyntaxError.TypeError;
+                };
+                _ = value;
+
+                try self.declare(ident.symbol, t, ident, true);
+
+                try self.consume(tt.SEMICOLON);
             },
             tt.LPAREN => {
                 var ft = self.alloc.create(types.Type) catch unreachable;
@@ -418,12 +455,15 @@ pub const Parser = struct {
         var body = try self.parseBody();
         defer body.destroy(self.alloc);
 
+        var callsFunction = body.callsFunction or ifExp.callsFunction;
+
         if (self.scanner.peek().tokenType != tt.ELSE) {
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .endsWithReturn = false,
                 .semiMustFollow = false,
                 .hasLValue = false,
+                .callsFunction = callsFunction,
             };
         }
 
@@ -437,11 +477,13 @@ pub const Parser = struct {
             defer anotherIfExp.destroy(self.alloc);
 
             c = anotherIfExp.endsWithReturn;
+            callsFunction = callsFunction or anotherIfExp.callsFunction;
         } else {
             var anotherBody = try self.parseBody();
             defer anotherBody.destroy(self.alloc);
 
             c = anotherBody.endsWithReturn;
+            callsFunction = callsFunction or anotherBody.callsFunction;
         }
 
         if (b and c) {
@@ -450,6 +492,7 @@ pub const Parser = struct {
                 .endsWithReturn = true,
                 .semiMustFollow = false,
                 .hasLValue = false,
+                .callsFunction = callsFunction,
             };
         }
 
@@ -465,6 +508,7 @@ pub const Parser = struct {
             .endsWithReturn = false,
             .semiMustFollow = false,
             .hasLValue = false,
+            .callsFunction = callsFunction,
         };
     }
 
@@ -510,6 +554,7 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
+            .callsFunction = body.callsFunction or stepExp.callsFunction or condExp.callsFunction or initExp.callsFunction,
         };
     }
 
@@ -540,12 +585,14 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
+            .callsFunction = body.callsFunction or exp.callsFunction,
         };
     }
 
     fn parseDoWhile(self: *Parser) SyntaxError!Expression {
         self.consume(tt.DO) catch unreachable;
 
+        var bodyCallsFunction = false;
         {
             // Lexical scope to leverage defers to pop labels immediately after parsing the body.
             self.breakStack.append("TODO: label for the end of body") catch unreachable;
@@ -555,6 +602,8 @@ pub const Parser = struct {
 
             var body = try self.parseBody();
             defer body.destroy(self.alloc);
+
+            bodyCallsFunction = body.callsFunction;
         }
 
         try self.consume(tt.WHILE);
@@ -573,6 +622,7 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
+            .callsFunction = exp.callsFunction or bodyCallsFunction,
         };
     }
 
@@ -594,6 +644,7 @@ pub const Parser = struct {
             .lValue = exp.lValue,
             .semiMustFollow = false,
             .endsWithReturn = exp.endsWithReturn,
+            .callsFunction = exp.callsFunction,
         };
     }
 
@@ -647,6 +698,7 @@ pub const Parser = struct {
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                     .endsWithReturn = true,
                     .semiMustFollow = true,
+                    .callsFunction = retExp.callsFunction,
                 };
             },
         };
@@ -761,6 +813,7 @@ pub const Parser = struct {
                 exp.lValue = subExp.lValue;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
+                exp.callsFunction = exp.callsFunction or subExp.callsFunction;
             },
             tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
                 // TODO: When generating IR, do not forget about signedness for tt.QUO_ASSIGN.
@@ -809,6 +862,7 @@ pub const Parser = struct {
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
+                exp.callsFunction = exp.callsFunction or rhsExp.callsFunction;
             },
             // Assignments:tt.LAND_ASSIGN and tt.LOR_ASSIGN are special due to the fact that they are lazily evaluated.
             tt.LAND_ASSIGN, tt.LOR_ASSIGN => {
@@ -831,6 +885,7 @@ pub const Parser = struct {
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
+                exp.callsFunction = exp.callsFunction or rhsExp.callsFunction;
             },
             else => @panic("ICE: exhausted all the possible assignments"),
         }
@@ -912,6 +967,7 @@ pub const Parser = struct {
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
+                exp.callsFunction = exp.callsFunction or exp2.callsFunction or exp3.callsFunction;
                 break :blk exp;
             },
             tt.QUESTION_MARK => blk: {
@@ -943,6 +999,7 @@ pub const Parser = struct {
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
+                exp.callsFunction = exp.callsFunction or exp2.callsFunction or exp3.callsFunction;
 
                 break :blk exp;
             },
@@ -993,6 +1050,8 @@ pub const Parser = struct {
                             self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
                             return SyntaxError.TypeError;
                         }
+
+                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
                     } else {
                         toEnd.resize(0) catch unreachable;
                         end = "TODO";
@@ -1003,6 +1062,8 @@ pub const Parser = struct {
 
                         var nExp = try self.parseNot();
                         defer nExp.destroy(self.alloc);
+
+                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                             self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
@@ -1015,6 +1076,8 @@ pub const Parser = struct {
 
                     var nExp = try self.parseNot();
                     defer nExp.destroy(self.alloc);
+
+                    exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                     if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                         self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
@@ -1030,6 +1093,7 @@ pub const Parser = struct {
                         .hasLValue = false,
                         .semiMustFollow = true,
                         .endsWithReturn = false,
+                        .callsFunction = exp.callsFunction,
                     };
                 },
             }
@@ -1073,7 +1137,7 @@ pub const Parser = struct {
         while (tt.isRelational(self.scanner.peek().tokenType)) {
             var op = self.scanner.next();
             var yExp = try self.parseArithmeticExpression();
-            errdefer yExp.destroy(self.alloc);
+            defer yExp.destroy(self.alloc);
 
             var t: *types.Type = types.leastSupertype(self.alloc, xExp.t.?, yExp.t.?) orelse {
                 self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
@@ -1137,7 +1201,7 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.destroy(self.alloc);
             xExp = yExp.clone(self.alloc);
-            yExp.destroy(self.alloc);
+            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         xExp.t.?.destroy(self.alloc);
@@ -1225,6 +1289,7 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.t.?.destroy(self.alloc);
             xExp.t = t;
+            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         // TODO: xExp.rValue
@@ -1361,6 +1426,7 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.t.?.destroy(self.alloc);
             xExp.t = t;
+            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         // TODO: xExp.rValue = ...
@@ -1635,8 +1701,10 @@ pub const Parser = struct {
             },
             tt.AT => {
                 self.consume(tt.AT) catch unreachable;
+
                 if (types.startsType(self.scanner.peek().symbol)) {
                     // We're dealing with explicit type conversion.
+
                     var newT = try self.parseType();
                     errdefer newT.destroy(self.alloc);
 
@@ -1665,6 +1733,7 @@ pub const Parser = struct {
                     .rValue = "TODO: Name of the instruction",
                     .semiMustFollow = true,
                     .endsWithReturn = false,
+                    .callsFunction = true,
                 };
             },
             tt.C_CHAR => {
@@ -1733,6 +1802,7 @@ pub const Parser = struct {
             .hasLValue = false,
             .semiMustFollow = true,
             .endsWithReturn = false,
+            .callsFunction = true,
         };
     }
 
