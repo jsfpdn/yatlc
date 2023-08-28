@@ -41,7 +41,11 @@ pub const Scanner = struct {
     /// If tokenWriter was supplied during the initialization, the analyzed token
     /// is formatted and written to it.
     pub fn next(self: *Scanner) token.Token {
-        return self._next(false);
+        var tok: Token = self._next(true);
+        while (tok.tokenType == TokenType.COMMENT) {
+            tok = self._next(true);
+        }
+        return tok;
     }
 
     /// Peek reads the source code and returns the next lexem without advancing
@@ -52,7 +56,10 @@ pub const Scanner = struct {
         const oldLineOffest = self.lineOffset;
         const oldLastToken = self.lastToken;
 
-        const tok = self._next(true);
+        var tok: Token = self._next(true);
+        while (tok.tokenType == TokenType.COMMENT) {
+            tok = self._next(true);
+        }
 
         self.offset = oldOffset;
         self.charOffset = oldCharOffset;

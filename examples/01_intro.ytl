@@ -1,0 +1,85 @@
+/* yatl supports multi-line
+    /* and nested comments! */
+*/
+
+// global_variable is a global variable of type i64.
+i64 global_variable = 123;
+
+// This is a forward declaration of a function that takes
+// two i32 values and returns a boolean.
+bool helper(i32, i32);
+
+// This is the definition of the aforementioned forward declaration.
+// Function cannot be called if it was declared but not defined.
+bool helper(i32 a, i32 b) {
+    i64 c = 123;
+    i64 d = 0;
+    d += c;
+
+    // Let's explicitely cast `a`, which is of type i32, to i64.
+    i64 f = @i64(a);
+
+    return d + c == global_variable;
+}
+
+bool booleanOperators() {
+    bool a = false;
+    bool b = true;
+
+    a &= false;
+    a |= true;
+    b |= (false and true) and a;
+}
+
+// Similar to C, main is the entrypoint of the program.
+i32 main(i32 argc, [-][-]u8 argv) {
+    // yatl supports multi-dimensional arrays. Varible `array` is a 3-dimensional array,
+    // a cube, where each element is a 1-dimensional array of values of type u8.
+    [-,-,-][-]u8 array;
+
+    u8 res = ((array[1,2,3][1] + array[3,2,1][42]) * 3) % 12;
+
+    // Unit is a type similar to C's void. Units can be checked only for equality.
+    unit a;
+    unit b;
+
+    if (a != b) {}
+    else if (a == b) {}
+    else {}
+
+    i32 ad = 123;
+    i32 result = (1 + 2 + 3) + ad * 12;
+
+    // yatl also supports ternary operators. Both branches of the ternary must have
+    // the same common supertype.
+    bool value = true 
+        ? true
+        : false;
+
+    // While, do-while and for loops are supported.
+    while (true) {
+        do {
+            // For loop consists of an initialization step, condition that must be of type bool
+            // and a step.
+            for (i32 i = 0, i <= 10, i++) {
+                break;
+            }
+            continue;
+        } while (true)
+
+        if (false) {
+            break;
+        } else {
+            continue;
+        }
+    }
+
+    {
+        // Variables can be shadowed - here, `a` is of type bool but in the outer scope
+        // it is of type unit.
+        bool a = helper(42, 22);
+        bool c = a;
+    }
+
+    return @i32(42);
+}

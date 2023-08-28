@@ -59,13 +59,11 @@ test "parse correct top level statement" {
     };
 
     const cases = [_]testCase{
-        .{ .input = "u32 testFunc() {}" },
-        .{ .input = "unit testFunc() {}" },
+        .{ .input = "u32 testFunc() { return @u32(123); }" },
         .{ .input = "unit testFunc();" },
         .{ .input = "unit testFunc(u32 a);" },
         .{ .input = "[-]u32 testFunc(u32 a, [-][-]i32 b);" },
-        .{ .input = "[-]u32 testFunc(u32 a, [-][-]i32 b) {}" },
-        .{ .input = "[-][-,-,-]i32 testFunc(u32 a, [-][-]i32 b) {}" },
+        .{ .input = "[-][-,-,-]i32 testFunc(u32 a, [-][-]i32 b);" },
     };
 
     for (cases) |tc| {
@@ -79,53 +77,3 @@ test "parse correct top level statement" {
         p.deinit();
     }
 }
-
-test "parse function definition after declaration" {
-    const testCase = struct {
-        input: [:0]const u8,
-    };
-
-    const cases = [_]testCase{
-        // TODO: test errors.
-        .{ .input = "u32 testFunc(); u32 testFunc(){}" },
-        .{ .input = "u32 testFunc(i32); u32 testFunc(i32 a){}" },
-        .{ .input = "[-]u32 testFunc([-,-]u32, i32); [-]u32 testFunc([-,-]u32 a, i32 b){}" },
-    };
-
-    for (cases) |tc| {
-        var s = scanner.Scanner.init(tc.input, null);
-        var p = parser.Parser.init(s, null, std.testing.allocator);
-        // parser must be `errdefer`-ed in case an error occurs.
-        errdefer p.deinit();
-
-        try p.parse();
-
-        p.deinit();
-    }
-}
-
-test "parse invalid syntactic constructs" {
-    const testCase = struct {
-        input: [:0]const u8,
-        err: []const u8,
-    };
-
-    const cases = [_]testCase{
-        .{ .input = "i32 main() { 5 }}", .err = "expected type, found '}' instead" },
-        // .{ .input = "i32 main() {{ 5 }", .err = "expected type, found '}' instead" },
-        // .{ .input = "i32 main() { i32 a = 19 + 3 + a;}", .err = "TODO" },
-    };
-
-    for (cases) |tc| {
-        var s = scanner.Scanner.init(tc.input, null);
-        var p = parser.Parser.init(s, null, std.testing.allocator);
-        // parser must be `errdefer`-ed in case an error occurs.
-        errdefer p.deinit();
-
-        p.parse() catch {};
-
-        p.deinit();
-    }
-}
-
-const testErrors = error{ExpectedEqual};

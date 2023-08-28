@@ -200,25 +200,8 @@ test "scan comments" {
     ;
     var s = Scanner.init(contents, null);
 
-    const nestedComment =
-        \\/* multiline comment!
-        \\      /* nested multiline comment! */
-        \\  this is also a comment */
-    ;
-
-    const cases = [_]tuple{
-        .{ .symbol = "// This is a comment 1!", .tokenType = TokenType.COMMENT },
-        .{ .symbol = "// This is a // comment 2!", .tokenType = TokenType.COMMENT },
-        .{ .symbol = "/* multiline comment! */", .tokenType = TokenType.COMMENT },
-        .{ .symbol = nestedComment, .tokenType = TokenType.COMMENT },
-    };
-
-    var tok: token.Token = undefined;
-    for (cases) |tc| {
-        tok = s.next();
-        try std.testing.expectEqualStrings(tc.symbol, tok.symbol);
-        try std.testing.expectEqual(tc.tokenType, tok.tokenType);
-    }
+    // Comments are skipped.
+    try std.testing.expectEqual(s.next().tokenType, TokenType.EOF);
 }
 
 test "scan malformed multiline comments" {

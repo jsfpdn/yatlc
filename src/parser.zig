@@ -61,7 +61,6 @@ pub const Parser = struct {
     returnType: ?*types.Type = null,
 
     // TODO:
-    // * handle comments properly
     // * constant folding
     // * IR emitter
 
@@ -89,11 +88,10 @@ pub const Parser = struct {
 
         var next = self.scanner.peek();
         while (next.tokenType != tt.EOF) {
-            if (next.tokenType == tt.COMMENT) {
-                self.consume(tt.COMMENT) catch unreachable;
-            } else {
-                self.parseTopLevelStatement() catch return SyntaxError.UnexpectedToken;
-            }
+            self.parseTopLevelStatement() catch {
+                std.log.err("encountered error", .{});
+                return SyntaxError.UnexpectedToken;
+            };
 
             next = self.scanner.peek();
         }
