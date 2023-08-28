@@ -1,5 +1,5 @@
 
-i32 global_variable = 123;
+i64 global_variable = 123;
 
 bool helper(i32, i32);
 
@@ -7,6 +7,8 @@ bool helper(i32 a, i32 b) {
     i64 c = 123;
     i64 d = 0;
     d += c;
+
+    i64 f = @i64(a);
 
     return d + c == global_variable;
 }

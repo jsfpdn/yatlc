@@ -61,7 +61,6 @@ pub const Parser = struct {
     returnType: ?*types.Type = null,
 
     // TODO:
-    // * type conversions
     // * handle comments properly
     // * constant folding
     // * IR emitter
@@ -139,22 +138,8 @@ pub const Parser = struct {
 
                 const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
                     switch (err) {
-                        ConvErr.Overflow => self.report(
-                            ident,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s} due to possible overflow",
-                            .{ exp.t.?.str(), t.str() },
-                            true,
-                            true,
-                        ),
-                        ConvErr.NoImplicit => self.report(
-                            ident,
-                            reporter.Level.ERROR,
-                            "cannot cast returned value of type {s} to {s}",
-                            .{ exp.t.?.str(), t.str() },
-                            true,
-                            true,
-                        ),
+                        ConvErr.Overflow => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ exp.t.?.str(), t.str() }, true, true),
+                        ConvErr.NoImplicit => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s}", .{ exp.t.?.str(), t.str() }, true, true),
                     }
 
                     return SyntaxError.TypeError;
@@ -220,6 +205,7 @@ pub const Parser = struct {
                             // emit ret void
                         } else {
                             _ = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue) catch {
+                                self.report(fs.location, reporter.Level.ERROR, "cannot return value of type {s} from function that must return {s}", .{ exp.t.?.str(), self.returnType.?.str() }, true, true);
                                 return SyntaxError.TypeError;
                             };
                         }
@@ -683,7 +669,7 @@ pub const Parser = struct {
                         ConvErr.NoImplicit => self.report(
                             ret,
                             reporter.Level.ERROR,
-                            "cannot cast returned value of type {s} to {s}",
+                            "cannot cast value of type {s} to {s}",
                             .{ retExp.t.?.str(), self.returnType.?.str() },
                             true,
                             true,
@@ -793,7 +779,7 @@ pub const Parser = struct {
                         ConvErr.NoImplicit => self.report(
                             identTok.?,
                             reporter.Level.ERROR,
-                            "cannot cast returned value of type {s} to {s}",
+                            "cannot cast value of type {s} to {s}",
                             .{ subExp.t.?.str(), identType.?.str() },
                             true,
                             true,
@@ -1145,14 +1131,25 @@ pub const Parser = struct {
             };
             defer t.destroy(self.alloc);
 
-            var valX: ?[]const u8 = null;
+            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                switch (err) {
+                    ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
+                    ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
+                }
+                return SyntaxError.TypeError;
+            };
             _ = valX;
-            var valY: ?[]const u8 = null;
-            _ = valY;
 
-            // TODO: Continue here with the type checking.
-            // valX = self.convert(t, xExp.t.?, ...);
-            // valY = self.convert(t, yExp.t.?, ...);
+            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                switch (err) {
+                    ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
+                    ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
+                }
+                return SyntaxError.TypeError;
+            };
+            _ = valY;
 
             switch (t.*) {
                 types.TypeTag.simple => |simpleType| {
@@ -1274,14 +1271,25 @@ pub const Parser = struct {
                 // };
                 // TODO: Set expression attributes.
             } else {
-                var xVal = "";
-                var yVal = "";
-                _ = xVal;
-                _ = yVal;
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                    switch (err) {
+                        ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
+                        ConvErr.NoImplicit => self.report(tok, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
+                    }
+                    return SyntaxError.TypeError;
+                };
+                _ = valX;
 
-                // TODO: Continue here with the type checking.
-                // valX = self.convert(t, xExp.t.?, ...);
-                // valY = self.convert(t, yExp.t.?, ...);
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                    switch (err) {
+                        ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
+                        ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
+                    }
+                    return SyntaxError.TypeError;
+                };
+                _ = valY;
 
                 // TODO: Emit IR depending on the operation and expression type.
                 // TODO: Set expression attributes.
@@ -1413,9 +1421,25 @@ pub const Parser = struct {
                 //     else => unreachable,
                 // };
             } else {
-                // TODO: Continue here with the type checking.
-                // valX = self.convert(t, xExp.t.?, ...);
-                // valY = self.convert(t, yExp.t.?, ...);
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                    switch (err) {
+                        ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
+                        ConvErr.NoImplicit => self.report(tok, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
+                    }
+                    return SyntaxError.TypeError;
+                };
+                _ = valX;
+
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                    switch (err) {
+                        ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
+                        ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
+                    }
+                    return SyntaxError.TypeError;
+                };
+                _ = valY;
 
                 // TODO: Emit IR depending on the operation and expression type.
                 // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
@@ -1456,7 +1480,7 @@ pub const Parser = struct {
                         self.report(
                             tok,
                             reporter.Level.ERROR,
-                            "cannot cast returned value of type {s} to {s}",
+                            "cannot cast value of type {s} to {s}",
                             .{ exp.lt.?.str(), exp.t.?.str() },
                             true,
                             true,
@@ -1536,7 +1560,7 @@ pub const Parser = struct {
                                 self.report(
                                     tok,
                                     reporter.Level.ERROR,
-                                    "cannot cast returned value of type {s} to {s}",
+                                    "cannot cast value of type {s} to {s}",
                                     .{ iExp.t.?.str(), t.str() },
                                     true,
                                     true,
@@ -1700,23 +1724,30 @@ pub const Parser = struct {
                 };
             },
             tt.AT => {
-                self.consume(tt.AT) catch unreachable;
+                const at = self.consumeGet(tt.AT) catch unreachable;
 
                 if (types.startsType(self.scanner.peek().symbol)) {
                     // We're dealing with explicit type conversion.
 
                     var newT = try self.parseType();
-                    errdefer newT.destroy(self.alloc);
+                    defer newT.destroy(self.alloc);
 
                     // TODO: Figure out arrays (starts on line 1892).
                     var cExp = try self.parseI();
                     errdefer cExp.destroy(self.alloc);
 
-                    // TODO: Convert the types
-                    // self.convert(newT, cExp.t.?, ..., ConvMode.EXPLICIT);
+                    const valY = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, "TODO") catch |err| {
+                        // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+                        switch (err) {
+                            ConvErr.Overflow => self.report(at, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ cExp.t.?.str(), newT.str() }, true, true),
+                            ConvErr.NoImplicit => self.report(at, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ cExp.t.?.str(), newT.str() }, true, true),
+                        }
+                        return SyntaxError.TypeError;
+                    };
+                    _ = valY;
 
-                    cExp.destroy(self.alloc);
-                    cExp.t = newT;
+                    cExp.t.?.destroy(self.alloc);
+                    cExp.t = newT.clone(self.alloc);
                     cExp.hasLValue = false;
                     // TODO: cExp.rValue = ...
                     cExp.semiMustFollow = true;

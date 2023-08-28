@@ -2,7 +2,7 @@
 
 // Function declaration and corresponding function definition must agree on types of arguments:
 i32 funcTypeMismatch(i32, u32, [-]u32);
-i32 funcTypeMismatch(u32 a, u32 b, [-]u32 arr) {}
+i32 funcTypeMismatch(u32 a, u32 b, [-]u32 arr) { return @i32(0); }
 
 // Function definition cannot omit names of arguments:
 i32 funcArgsUnnamed(u32, u32, [-]u32) {}
