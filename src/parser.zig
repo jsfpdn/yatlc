@@ -1,10 +1,11 @@
 const std = @import("std");
 
-const types = @import("types.zig");
-const scanner = @import("scanner.zig");
-const token = @import("token.zig");
+const codegen = @import("codegen.zig");
 const reporter = @import("reporter.zig");
+const scanner = @import("scanner.zig");
 const symbols = @import("symbols.zig");
+const token = @import("token.zig");
+const types = @import("types.zig");
 
 const tt = token.TokenType;
 
@@ -46,14 +47,13 @@ pub const Expression = struct {
 };
 
 pub const Parser = struct {
-    scanner: scanner.Scanner,
-    rep: ?reporter.Reporter,
+    s: scanner.Scanner,
+    r: ?reporter.Reporter,
+    c: codegen.CodeGen,
 
     alloc: std.mem.Allocator,
 
     st: symbols.SymbolTable,
-
-    emit: bool,
 
     breakStack: std.ArrayList([]const u8),
     contStack: std.ArrayList([]const u8),
@@ -64,13 +64,21 @@ pub const Parser = struct {
     // * constant folding
     // * IR emitter
 
-    pub fn init(s: scanner.Scanner, r: ?reporter.Reporter, alloc: std.mem.Allocator) Parser {
+    pub fn init(
+        alloc: std.mem.Allocator,
+        s: scanner.Scanner,
+        r: ?reporter.Reporter,
+        c: codegen.CodeGen,
+    ) Parser {
         return .{
-            .scanner = s,
-            .rep = r,
             .alloc = alloc,
+
+            .s = s,
+            .r = r,
+            .c = c,
+
             .st = symbols.SymbolTable.init(alloc),
-            .emit = true,
+
             .breakStack = std.ArrayList([]const u8).init(alloc),
             .contStack = std.ArrayList([]const u8).init(alloc),
         };
@@ -86,14 +94,13 @@ pub const Parser = struct {
         // Open the global scope.
         try self.st.open();
 
-        var next = self.scanner.peek();
+        var next = self.s.peek();
         while (next.tokenType != tt.EOF) {
             self.parseTopLevelStatement() catch {
-                std.log.err("encountered error", .{});
                 return SyntaxError.UnexpectedToken;
             };
 
-            next = self.scanner.peek();
+            next = self.s.peek();
         }
 
         // Report any declared but not defined functions.
@@ -121,7 +128,7 @@ pub const Parser = struct {
         const t = try self.parseType();
         const ident = try self.consumeGet(tt.IDENT);
 
-        var next = self.scanner.next();
+        var next = self.s.next();
         switch (next.tokenType) {
             tt.ASSIGN => {
                 errdefer t.destroy(self.alloc);
@@ -156,14 +163,17 @@ pub const Parser = struct {
 
                 var fs = symbols.Symbol{
                     .name = ident.symbol,
-                    .llvmName = "TODO",
+                    .llvmName = std.fmt.allocPrint(self.alloc, "TODO", .{}) catch unreachable,
                     .location = ident,
                     .t = ft,
                     .defined = false,
                 };
+                errdefer self.alloc.free(fs.llvmName);
+
+                // TODO(emit): Define function.
 
                 // Try to parse the function body if it is a function definition.
-                next = self.scanner.peek();
+                next = self.s.peek();
                 if (next.tokenType == tt.LBRACE) {
                     // Open a new scope just for the function arguments. This way,
                     // arguments can be shadowed in the function body.
@@ -178,7 +188,6 @@ pub const Parser = struct {
                         if (std.mem.eql(u8, arg.name, "")) {
                             if (fs.t.func.namedParams) {
                                 self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name}, true, true);
-                                self.emit = false;
                             }
                             fs.t.func.namedParams = false;
                         } else {
@@ -186,7 +195,6 @@ pub const Parser = struct {
                             self.st.insert(newArg) catch |err| switch (err) {
                                 symbols.SymbolError.SymbolAlreadyExists => {
                                     self.report(fs.location, reporter.Level.ERROR, "cannot define 2 function arguments with the same name", .{}, true, true);
-                                    self.emit = false;
                                     // Destroy the new argument immediately since we need to move on with the parsing.
                                     newArg.destroy(self.alloc);
                                 },
@@ -250,7 +258,6 @@ pub const Parser = struct {
                             self.st.upsert(fs);
                         },
                         else => {
-                            self.emit = false;
                             self.report(fs.location, reporter.Level.ERROR, "function '{s}' shadows global variable", .{fs.name}, true, true);
                             // TODO: Return better error? We need to return with error
                             // in order to destroy all the data structures.
@@ -265,7 +272,6 @@ pub const Parser = struct {
             else => {
                 // t.destroy(self.alloc);
 
-                self.emit = false;
                 self.report(
                     next,
                     reporter.Level.ERROR,
@@ -282,7 +288,7 @@ pub const Parser = struct {
     fn parseArgList(self: *Parser) SyntaxError!std.ArrayList(symbols.Symbol) {
         // LPAREN is already consumed, scanner must point to the type of the first argument.
         var expectComma = false;
-        var next = self.scanner.peek();
+        var next = self.s.peek();
 
         const argNamesE = enum { DoNotKnow, Named, Unnamed };
         var argNames = argNamesE.DoNotKnow;
@@ -300,27 +306,27 @@ pub const Parser = struct {
 
             errdefer s.t.destroy(self.alloc);
             if (argNames == argNamesE.Unnamed or
-                ((self.scanner.peek().tokenType == tt.COMMA or self.scanner.peek().tokenType == tt.RPAREN) and argNames == argNamesE.DoNotKnow))
+                ((self.s.peek().tokenType == tt.COMMA or self.s.peek().tokenType == tt.RPAREN) and argNames == argNamesE.DoNotKnow))
             {
                 argNames = argNamesE.Unnamed;
                 s.location = undefined;
+                s.llvmName = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
             } else {
                 argNames = argNamesE.Named;
                 const id = try self.consumeGet(tt.IDENT);
                 s.name = id.symbol;
-                s.llvmName = "TODO";
+                s.llvmName = std.fmt.allocPrint(self.alloc, "TODO", .{}) catch unreachable;
                 s.location = id;
             }
 
             if (std.mem.eql(u8, s.name, "") and types.SimpleType.isType(s.name)) {
-                self.emit = false;
                 self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{}, true, true);
             } else {
                 try args.append(s);
             }
 
             expectComma = true;
-            next = self.scanner.peek();
+            next = self.s.peek();
         }
 
         self.consume(tt.RPAREN) catch unreachable;
@@ -329,7 +335,7 @@ pub const Parser = struct {
 
     /// Parses a type.
     pub fn parseType(self: *Parser) SyntaxError!*types.Type {
-        var tok = self.scanner.next();
+        var tok = self.s.next();
 
         var tp = try self.alloc.create(types.Type);
         errdefer self.alloc.destroy(tp);
@@ -339,7 +345,6 @@ pub const Parser = struct {
                 tp.* = types.Type{ .simple = t };
                 return tp;
             } else {
-                self.emit = false;
                 self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
@@ -349,7 +354,7 @@ pub const Parser = struct {
                     try self.consume(tt.SUB);
                     array.dimensions += 1;
 
-                    tok = self.scanner.next();
+                    tok = self.s.next();
                     if (tok.tokenType == tt.COMMA) {}
                 }
                 array.ofType = try self.parseType();
@@ -357,7 +362,6 @@ pub const Parser = struct {
                 return tp;
             },
             else => {
-                self.emit = false;
                 self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol}, true, true);
                 return SyntaxError.UnexpectedToken;
             },
@@ -369,7 +373,7 @@ pub const Parser = struct {
         var exp: ?Expression = null;
         errdefer if (exp) |e| e.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         if (tok.tokenType == tt.RBRACE) {
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
@@ -398,10 +402,10 @@ pub const Parser = struct {
                 exp = exp1;
             }
 
-            tok = self.scanner.peek();
+            tok = self.s.peek();
             if (tok.tokenType == tt.SEMICOLON) {
                 try self.consume(tt.SEMICOLON);
-                tok = self.scanner.peek();
+                tok = self.s.peek();
                 continue;
             }
 
@@ -441,7 +445,7 @@ pub const Parser = struct {
 
         var callsFunction = body.callsFunction or ifExp.callsFunction;
 
-        if (self.scanner.peek().tokenType != tt.ELSE) {
+        if (self.s.peek().tokenType != tt.ELSE) {
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .endsWithReturn = false,
@@ -456,7 +460,7 @@ pub const Parser = struct {
 
         self.consume(tt.ELSE) catch unreachable;
 
-        if (self.scanner.peek().tokenType == tt.IF) {
+        if (self.s.peek().tokenType == tt.IF) {
             var anotherIfExp = try self.parseIf();
             defer anotherIfExp.destroy(self.alloc);
 
@@ -635,7 +639,7 @@ pub const Parser = struct {
     fn parseReturn(self: *Parser) SyntaxError!Expression {
         const ret = self.consumeGet(tt.RETURN) catch unreachable;
 
-        return switch (self.scanner.peek().tokenType) {
+        return switch (self.s.peek().tokenType) {
             tt.SEMICOLON, tt.RPAREN, tt.RBRACK, tt.RBRACE, tt.COMMA, tt.COLON => blk: {
                 if (self.returnType) |rt| {
                     if (!rt.isUnit()) {
@@ -733,7 +737,7 @@ pub const Parser = struct {
         var identTok: ?token.Token = null;
         var identType: ?*types.Type = null;
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         if (types.startsType(tok.symbol)) {
             // Current token under the cursor is either a simple type or an array type.
             // TODO: Be careful when typechecking when identType is UNIT.
@@ -748,7 +752,7 @@ pub const Parser = struct {
             exp = try self.parseTernaryExpression();
         }
 
-        var assignTok = self.scanner.peek();
+        var assignTok = self.s.peek();
         if (!token.TokenType.isAssignment(assignTok.tokenType)) {
             return exp;
         }
@@ -895,7 +899,7 @@ pub const Parser = struct {
 
         self.st.insert(symbols.Symbol{
             .name = ident,
-            .llvmName = "TODO",
+            .llvmName = std.fmt.allocPrint(self.alloc, "TODO", .{}) catch unreachable,
             .location = at,
             .t = t,
             .defined = defined,
@@ -910,7 +914,7 @@ pub const Parser = struct {
         var exp = try self.parseLogicExpressions();
         errdefer exp.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         if (tok.tokenType != tt.QUESTION_MARK and tok.tokenType != tt.D_QUESTION_MARK) {
             return exp;
         }
@@ -995,7 +999,7 @@ pub const Parser = struct {
     fn parseLogicExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseNot();
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         switch (tok.tokenType) {
             tt.LAND, tt.LOR, tt.AND, tt.OR => {},
             else => return exp,
@@ -1019,7 +1023,7 @@ pub const Parser = struct {
         _ = lastBlock;
 
         while (true) {
-            tok = self.scanner.peek();
+            tok = self.s.peek();
             switch (tok.tokenType) {
                 tt.LAND, tt.LOR => {
                     // TODO: Figure out the IR magic.
@@ -1041,7 +1045,7 @@ pub const Parser = struct {
                         end = "TODO";
                     }
 
-                    while (self.scanner.peek().tokenType == tok.tokenType) {
+                    while (self.s.peek().tokenType == tok.tokenType) {
                         self.consume(tok.tokenType) catch unreachable;
 
                         var nExp = try self.parseNot();
@@ -1086,7 +1090,7 @@ pub const Parser = struct {
 
     // E^4, unary not
     fn parseNot(self: *Parser) SyntaxError!Expression {
-        const tok = self.scanner.peek();
+        const tok = self.s.peek();
         if (tok.tokenType == tt.NOT) {
             self.consume(tt.NOT) catch unreachable;
 
@@ -1112,14 +1116,14 @@ pub const Parser = struct {
         var xExp = try self.parseArithmeticExpression();
         errdefer xExp.destroy(self.alloc);
 
-        if (!tt.isRelational(self.scanner.peek().tokenType)) {
+        if (!tt.isRelational(self.s.peek().tokenType)) {
             return xExp;
         }
 
         var accResult: []const u8 = ""; // Accumulated result of all the comparisons together.
         var result: []const u8 = ""; // Current result.
-        while (tt.isRelational(self.scanner.peek().tokenType)) {
-            var op = self.scanner.next();
+        while (tt.isRelational(self.s.peek().tokenType)) {
+            var op = self.s.next();
             var yExp = try self.parseArithmeticExpression();
             defer yExp.destroy(self.alloc);
 
@@ -1213,7 +1217,7 @@ pub const Parser = struct {
         var xExp = try self.parseUnaryOperators();
         errdefer xExp.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         if (!tt.isLowerPrioArithmetic(tok.tokenType)) {
             return xExp;
         }
@@ -1225,8 +1229,8 @@ pub const Parser = struct {
 
         var result = "";
         _ = result;
-        while (tt.isLowerPrioArithmetic(self.scanner.peek().tokenType)) {
-            var op = self.scanner.next();
+        while (tt.isLowerPrioArithmetic(self.s.peek().tokenType)) {
+            var op = self.s.next();
 
             var yExp = try self.parseUnaryOperators();
             defer yExp.destroy(self.alloc);
@@ -1307,7 +1311,7 @@ pub const Parser = struct {
 
     // E^7, -, !
     fn parseUnaryOperators(self: *Parser) SyntaxError!Expression {
-        const tok = self.scanner.peek();
+        const tok = self.s.peek();
         switch (tok.tokenType) {
             tt.SUB => {
                 self.consume(tt.SUB) catch unreachable;
@@ -1374,7 +1378,7 @@ pub const Parser = struct {
         var xExp = try self.parseArrayIndexingAndPrefixExpressions();
         errdefer xExp.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         if (!tt.isHigherPrioArithmetic(tok.tokenType)) {
             return xExp;
         }
@@ -1386,8 +1390,8 @@ pub const Parser = struct {
 
         var result: []const u8 = "";
         _ = result;
-        while (tt.isHigherPrioArithmetic(self.scanner.peek().tokenType)) {
-            var op = self.scanner.next();
+        while (tt.isHigherPrioArithmetic(self.s.peek().tokenType)) {
+            var op = self.s.next();
             var yExp = try self.parseArrayIndexingAndPrefixExpressions();
             defer yExp.destroy(self.alloc);
 
@@ -1463,7 +1467,7 @@ pub const Parser = struct {
         var exp = try self.parseI();
         errdefer exp.destroy(self.alloc);
 
-        var tok = self.scanner.peek();
+        var tok = self.s.peek();
         while (true) {
             switch (tok.tokenType) {
                 tt.INC, tt.DEC => {
@@ -1519,7 +1523,7 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
-                    if (self.scanner.peek().tokenType == tt.RBRACK) {
+                    if (self.s.peek().tokenType == tt.RBRACK) {
                         // Zero-dimensional array.
                         self.consume(tt.RBRACK) catch unreachable;
                         if (exp.t.?.array.dimensions != 0) {
@@ -1544,7 +1548,7 @@ pub const Parser = struct {
                     var indexes = std.ArrayList([]const u8).init(self.alloc);
                     defer indexes.deinit();
 
-                    var next = self.scanner.peek();
+                    var next = self.s.peek();
                     while (next.tokenType != tt.RBRACK) {
                         var iExp = try self.parseExpression();
                         defer iExp.destroy(self.alloc);
@@ -1569,11 +1573,11 @@ pub const Parser = struct {
                             indexes.append(value) catch unreachable;
                         }
 
-                        next = self.scanner.peek();
+                        next = self.s.peek();
                         if (next.tokenType == tt.COMMA) {
                             self.consume(tt.COMMA) catch unreachable;
 
-                            next = self.scanner.peek();
+                            next = self.s.peek();
                             if (next.tokenType == tt.RBRACK) {
                                 self.report(next, reporter.Level.ERROR, "expected index but found '{s}' instead", .{next.symbol}, true, true);
                                 return SyntaxError.TypeError;
@@ -1617,12 +1621,12 @@ pub const Parser = struct {
                 },
                 else => return exp,
             }
-            tok = self.scanner.peek();
+            tok = self.s.peek();
         }
     }
 
     fn parseI(self: *Parser) SyntaxError!Expression {
-        var next = self.scanner.peek();
+        var next = self.s.peek();
         switch (next.tokenType) {
             tt.LBRACE => return self.parseBody(),
             tt.LPAREN => {
@@ -1724,7 +1728,7 @@ pub const Parser = struct {
             tt.AT => {
                 const at = self.consumeGet(tt.AT) catch unreachable;
 
-                if (types.startsType(self.scanner.peek().symbol)) {
+                if (types.startsType(self.s.peek().symbol)) {
                     // We're dealing with explicit type conversion.
 
                     var newT = try self.parseType();
@@ -1840,15 +1844,13 @@ pub const Parser = struct {
     }
 
     fn consumeGet(self: *Parser, want: tt) SyntaxError!scanner.Token {
-        const next = self.scanner.next();
+        const next = self.s.next();
 
         if (next.tokenType == tt.ILLEGAL) {
-            self.emit = false;
             self.report(next, reporter.Level.ERROR, "encountered illegal symbol '{s}'", .{next.symbol}, true, true);
         }
 
         if (want != next.tokenType) {
-            self.emit = false;
             self.report(next, reporter.Level.ERROR, "expected '{s}' but found '{s}' instead", .{ tt.str(want), next.symbol }, true, true);
             return SyntaxError.UnexpectedToken;
         }
@@ -1861,11 +1863,7 @@ pub const Parser = struct {
         const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
         defer self.alloc.free(msg);
 
-        if (level == reporter.Level.ERROR) {
-            self.emit = false;
-        }
-
-        if (self.rep) |rep| {
+        if (self.r) |rep| {
             if (space) {
                 rep.space();
                 rep.space();

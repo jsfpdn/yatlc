@@ -124,7 +124,7 @@ pub const Func = struct {
     }
 
     pub fn destroy(self: *Func, alloc: std.mem.Allocator) void {
-        for (self.args.items) |arg| arg.t.destroy(alloc);
+        for (self.args.items) |arg| arg.destroy(alloc);
         self.args.deinit();
         self.retT.destroy(alloc);
     }

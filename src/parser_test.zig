@@ -70,10 +70,8 @@ test "parse correct top level statement" {
         var s = scanner.Scanner.init(tc.input, null);
         var p = parser.Parser.init(s, null, std.testing.allocator);
         // parser must be `errdefer`-ed in case an error occurs.
-        errdefer p.deinit();
+        defer p.deinit();
 
         try p.parse();
-
-        p.deinit();
     }
 }

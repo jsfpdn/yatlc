@@ -6,9 +6,10 @@ const io = std.io;
 const mem = std.mem;
 const process = std.process;
 
-const scanner = @import("scanner.zig");
-const reporter = @import("reporter.zig");
+const codegen = @import("codegen.zig");
 const parser = @import("parser.zig");
+const reporter = @import("reporter.zig");
+const scanner = @import("scanner.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
 
@@ -94,12 +95,26 @@ pub fn main() !void {
         w = f.writer();
     }
 
+    const llvmFilename = std.fmt.allocPrint(allocator, "{s}.ll", .{filename}) catch |err| {
+        fatal("could not prepare a .t file: {s}", .{@errorName(err)});
+    };
+    defer allocator.free(llvmFilename);
+    const llvmFile = std.fs.cwd().createFile(llvmFilename, .{ .read = false, .truncate = true }) catch |err| {
+        fatal("could not create a .t file: {s}", .{@errorName(err)});
+    };
+
     var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, w);
-    var p = parser.Parser.init(s, r, allocator);
+    var c = codegen.CodeGen.init(allocator);
+    var p = parser.Parser.init(allocator, s, r, c);
     defer p.deinit();
+    defer c.deinit();
 
     p.parse() catch {};
+
+    c.write(llvmFile.writer()) catch |err| {
+        fatal("could not emit LLVM IR: {s}", .{@errorName(err)});
+    };
 }
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {

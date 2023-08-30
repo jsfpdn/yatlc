@@ -15,12 +15,13 @@ pub const Symbol = struct {
 
     pub fn destroy(self: Symbol, alloc: std.mem.Allocator) void {
         self.t.destroy(alloc);
+        alloc.free(self.llvmName);
     }
 
     pub fn clone(self: Symbol, alloc: std.mem.Allocator) Symbol {
         return Symbol{
             .name = self.name,
-            .llvmName = self.llvmName,
+            .llvmName = std.fmt.allocPrint(alloc, "{s}", .{self.llvmName}) catch unreachable,
             .location = self.location,
             .t = self.t.clone(alloc),
             .defined = self.defined,
