@@ -1,12 +1,12 @@
 const std = @import("std");
 
-const t = @import("types.zig");
+const codegen = @import("codegen.zig");
 const parser = @import("parser.zig");
 const scanner = @import("scanner.zig");
-const token = @import("token.zig");
 const symbols = @import("symbols.zig");
-
+const t = @import("types.zig");
 const tt = @import("types_test.zig");
+const token = @import("token.zig");
 
 test "parse types" {
     const testCase = struct {
@@ -35,9 +35,10 @@ test "parse types" {
 
     for (cases) |tc| {
         var s = scanner.Scanner.init(tc.input, null);
-        var p = parser.Parser.init(s, null, std.testing.allocator);
-        // parser must be `errdefer`-ed in case an error occurs.
-        errdefer p.deinit();
+        var c = codegen.CodeGen.init(std.testing.allocator);
+        var p = parser.Parser.init(std.testing.allocator, s, null, c);
+        defer p.deinit();
+        defer c.deinit();
 
         if (tc.wantErr) |wantErr| {
             try std.testing.expectError(wantErr, p.parseType());
@@ -48,8 +49,6 @@ test "parse types" {
             // std.log.err("\n- {}\n- {}", .{ wantType.*, gotType.* });
             try tt.expectEqualDeep(wantType, gotType);
         }
-
-        p.deinit();
     }
 }
 
@@ -68,8 +67,9 @@ test "parse correct top level statement" {
 
     for (cases) |tc| {
         var s = scanner.Scanner.init(tc.input, null);
-        var p = parser.Parser.init(s, null, std.testing.allocator);
-        // parser must be `errdefer`-ed in case an error occurs.
+        var c = codegen.CodeGen.init(std.testing.allocator);
+        defer c.deinit();
+        var p = parser.Parser.init(std.testing.allocator, s, null, c);
         defer p.deinit();
 
         try p.parse();

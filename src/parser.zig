@@ -63,6 +63,8 @@ pub const Parser = struct {
     // TODO:
     // * constant folding
     // * IR emitter
+    //      * do not leak returned values from `self.convert` (is it exp.r?)
+    //      * fix potential issue in the convert function w/ memory leak when `result = temp;`
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -90,7 +92,9 @@ pub const Parser = struct {
         self.contStack.deinit();
     }
 
-    pub fn parse(self: *Parser) !void {
+    pub fn parse(self: *Parser, writer: std.fs.File.Writer) !void {
+        defer self.c.deinit();
+
         // Open the global scope.
         try self.st.open();
 
@@ -118,6 +122,8 @@ pub const Parser = struct {
 
         // TODO: check for main etc.
         self.st.close();
+
+        try self.c.write(writer);
     }
 
     fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
@@ -131,6 +137,7 @@ pub const Parser = struct {
         var next = self.s.next();
         switch (next.tokenType) {
             tt.ASSIGN => {
+                // TODO: Emit code for global variable declaration.
                 errdefer t.destroy(self.alloc);
 
                 var exp = try self.parseSubExpression();
@@ -141,7 +148,7 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
-                const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ exp.t.?.str(), t.str() }, true, true),
                         ConvErr.NoImplicit => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s}", .{ exp.t.?.str(), t.str() }, true, true),
@@ -156,25 +163,34 @@ pub const Parser = struct {
                 try self.consume(tt.SEMICOLON);
             },
             tt.LPAREN => {
+                self.c.newSegment();
+
                 var ft = self.alloc.create(types.Type) catch unreachable;
                 ft.* = types.Type{ .func = types.Func.init(self.alloc, t) };
                 errdefer ft.destroy(self.alloc);
                 ft.func.args = try self.parseArgList();
 
+                var llvmName = if (std.mem.eql(u8, "main", ident.symbol))
+                    std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable
+                else
+                    self.c.genLLVMName(ident.symbol);
+                errdefer self.alloc.free(llvmName);
+
                 var fs = symbols.Symbol{
                     .name = ident.symbol,
-                    .llvmName = std.fmt.allocPrint(self.alloc, "TODO", .{}) catch unreachable,
+                    .llvmName = llvmName,
                     .location = ident,
                     .t = ft,
                     .defined = false,
                 };
-                errdefer self.alloc.free(fs.llvmName);
 
-                // TODO(emit): Define function.
+                const sig = codegen.signature(self.alloc, llvmName, ft.func.args, t.*);
+                self.c.emitA(sig);
 
                 // Try to parse the function body if it is a function definition.
                 next = self.s.peek();
                 if (next.tokenType == tt.LBRACE) {
+                    self.c.emitInit(std.fmt.allocPrint(self.alloc, "{{", .{}) catch unreachable);
                     // Open a new scope just for the function arguments. This way,
                     // arguments can be shadowed in the function body.
                     try self.st.open();
@@ -183,6 +199,7 @@ pub const Parser = struct {
                     self.returnType = t.clone(self.alloc);
                     defer self.returnType.?.destroy(self.alloc);
 
+                    // Add the arguments to the new scope.
                     fs.t.func.namedParams = true;
                     for (fs.t.func.args.items) |arg| {
                         if (std.mem.eql(u8, arg.name, "")) {
@@ -201,24 +218,58 @@ pub const Parser = struct {
                                 symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
                             };
                         }
+
+                        var llvmType = codegen.llvmType(arg.t.*);
+                        var paramAlloc = self.c.genLLVMName(arg.llvmName);
+                        defer self.alloc.free(paramAlloc);
+
+                        self.c.emitInit(std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{ paramAlloc, llvmType }) catch unreachable);
+                        self.c.emitInit(std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmType, arg.llvmName, paramAlloc }) catch unreachable);
                     }
+
+                    self.c.newSegment();
+
+                    var bl = self.c.genLLVMName("label");
+                    defer self.alloc.free(bl);
+
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "br label {s}", .{bl}) catch unreachable,
+                        self.c.lastBlockIndex(),
+                    );
+
+                    self.c.emitBlock(bl);
 
                     var exp = try self.parseBody();
                     defer exp.destroy(self.alloc);
 
                     if (!exp.endsWithReturn) {
+                        // TODO: Fix endsWithReturn synthesized attribute?
                         if (self.returnType.?.isUnit()) {
-                            // emit ret void
+                            self.c.emit(
+                                std.fmt.allocPrint(self.alloc, "ret void", .{}) catch unreachable,
+                                self.c.lastBlockIndex(),
+                            );
                         } else {
-                            _ = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue) catch {
+                            var retVal = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue, self.c.lastBlockIndex()) catch {
                                 self.report(fs.location, reporter.Level.ERROR, "cannot return value of type {s} from function that must return {s}", .{ exp.t.?.str(), self.returnType.?.str() }, true, true);
                                 return SyntaxError.TypeError;
                             };
+
+                            self.c.emit(
+                                std.fmt.allocPrint(self.alloc, "ret {s} {s}", .{ codegen.llvmType(self.returnType.?.*), retVal }) catch unreachable,
+                                self.c.lastBlockIndex(),
+                            );
                         }
                     }
 
                     // Close the scope just for the function arguments.
                     self.st.close();
+
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "}}\n", .{}) catch unreachable,
+                        self.c.lastBlockIndex(),
+                    );
+                    self.c.waits = false;
 
                     fs.defined = true;
                 } else {
@@ -658,7 +709,7 @@ pub const Parser = struct {
                 var retExp = try self.parseSubExpression();
                 defer retExp.destroy(self.alloc);
 
-                const value = self.convert(self.returnType.?, retExp.t.?, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const value = self.convert(self.returnType.?, retExp.t.?, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(
                             ret,
@@ -768,7 +819,7 @@ pub const Parser = struct {
                 var subExp = try self.parseSubExpression();
                 defer subExp.destroy(self.alloc);
 
-                const value = self.convert(subExp.t.?, identType.?, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const value = self.convert(subExp.t.?, identType.?, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(
                             identTok.?,
@@ -821,7 +872,7 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
-                const value = self.convert(rhsExp.t.?, exp.lt.?, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const value = self.convert(rhsExp.t.?, exp.lt.?, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(
                             assignTok,
@@ -1133,7 +1184,7 @@ pub const Parser = struct {
             };
             defer t.destroy(self.alloc);
 
-            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                 // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                 switch (err) {
                     ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1143,7 +1194,7 @@ pub const Parser = struct {
             };
             _ = valX;
 
-            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                 // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                 switch (err) {
                     ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1273,7 +1324,7 @@ pub const Parser = struct {
                 // };
                 // TODO: Set expression attributes.
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1283,7 +1334,7 @@ pub const Parser = struct {
                 };
                 _ = valX;
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1423,7 +1474,7 @@ pub const Parser = struct {
                 //     else => unreachable,
                 // };
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1433,7 +1484,7 @@ pub const Parser = struct {
                 };
                 _ = valX;
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO") catch |err| {
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1478,7 +1529,7 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
-                    const valX = self.convert(exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue) catch {
+                    const valX = self.convert(exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue, self.c.lastBlockIndex()) catch {
                         self.report(
                             tok,
                             reporter.Level.ERROR,
@@ -1558,7 +1609,7 @@ pub const Parser = struct {
                         } else {
                             const t = types.SimpleType.create(self.alloc, types.SimpleType.I64);
                             defer t.destroy(self.alloc);
-                            const value = self.convert(iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue) catch {
+                            const value = self.convert(iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue, self.c.lastBlockIndex()) catch {
                                 self.report(
                                     tok,
                                     reporter.Level.ERROR,
@@ -1738,7 +1789,7 @@ pub const Parser = struct {
                     var cExp = try self.parseI();
                     errdefer cExp.destroy(self.alloc);
 
-                    const valY = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, "TODO") catch |err| {
+                    const valY = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                         // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                         switch (err) {
                             ConvErr.Overflow => self.report(at, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ cExp.t.?.str(), newT.str() }, true, true),
@@ -1882,6 +1933,7 @@ pub const Parser = struct {
         to: *types.Type,
         conv: ConvMode,
         what: []const u8,
+        blockIndex: usize,
     ) ConvErr![]const u8 {
         if (from.equals(to.*)) {
             return what;
@@ -1902,24 +1954,62 @@ pub const Parser = struct {
             return what;
         }
 
+        var result = self.c.genLLVMNameEmpty();
+        errdefer self.alloc.free(result);
+
+        var temp = self.c.genLLVMNameEmpty();
+        defer self.alloc.free(temp);
+
         if (from.isBool()) {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
 
             if (to.isNumeric()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext i1 {s} to {s}", .{ result, what, codegen.llvmType(to.*) }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isFloat() and conv == ConvMode.BITCAST) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext i1 {s} to i32", .{ temp, what }) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i32 {s} to float", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isDouble() and conv == ConvMode.BITCAST) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext i1 {s} to i64", .{ temp, what }) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i64 {s} to double", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isFloat() or to.isDouble()) {
                 // Conversion must be explicit.
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = select i1 {s} to {s} 1.0 {s} 0.0", .{ result, what, codegen.llvmType(to.*), codegen.llvmType(to.*) }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isArray() and conv == ConvMode.EXPLICIT) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = getelementptr i8, ptr null, i32 1", .{temp}) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = select i1 {s}, ptr {s}, ptr null", .{ result, what, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isArray()) {
                 // Coversion must be bitcast.
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = inttoptr i1 {s} to ptr", .{ result, what }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
 
-            return "TODO";
+            return result;
         }
 
         if (from.isPointer()) {
@@ -1932,31 +2022,71 @@ pub const Parser = struct {
 
             // Conversion must be bitcast.
             if (to.isNumeric() or to.isBool()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr null to {s}", .{ result, codegen.llvmType(to.*) }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isFloat()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr null to i32", .{temp}) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i32 {s} to float", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isDouble()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr null to i64", .{temp}) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i64 {s} to double", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
+
+            return result;
         }
 
-        if (from.isArray()) {
+        if (from.isArray() or from.isPointer()) {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
             if (to.isArray()) return what;
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = icmp ne ptr {s}, null ", .{ result, what }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isBool() or to.isNumeric()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint {s} to {s}", .{ result, what, codegen.llvmType(to.*) }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isFloat()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr {s} to i32", .{ temp, what }) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i32 {s} to float", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isDouble()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr {s} to i64", .{ temp, what }) catch unreachable,
+                    blockIndex,
+                );
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i32 {s} to double", .{ result, temp }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
 
-            return "TODO";
+            return result;
         }
 
         if (from.isConstant()) {
+            // TODO: Implement constants.
             if (to.isNumeric()) {
                 // TODO: Check bounds and return null if it does not fit.
                 if (true) {
@@ -1997,14 +2127,35 @@ pub const Parser = struct {
         }
 
         if (!from.isSigned()) {
+            // TODO: Implement width checking.
             if (false) {
                 // If `to` has greater bit width than `from`.
-                return "TODO";
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (to.isFloat() or to.isDouble()) {
                 if (conv != ConvMode.BITCAST) {
-                    return "TODO";
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = uitofp {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+
+                    return result;
                 }
 
                 var t = if (to.isFloat())
@@ -2015,13 +2166,41 @@ pub const Parser = struct {
 
                 if (false) {
                     // If `from` has greater bit width than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
+                            temp,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(t.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else if (false) {
                     // If `from` has smaller bit width than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                            temp,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(t.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else {
-                    // temp = what;
+                    self.alloc.free(temp);
+                    temp = what;
                 }
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(t.*),
+                        temp,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
 
-                return "TODO";
+                return result;
             }
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
@@ -2031,26 +2210,78 @@ pub const Parser = struct {
             }
 
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = icmp ne {s} {s}, 0", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isBool() or to.isNumeric()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isArray()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = inttoptr {s} {s} to ptr", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
 
-            return "TODO";
+            return result;
         }
 
         if (from.isSigned()) {
             if (false) {
                 // `to` is numeric and has greater bit width than `from`
-                if (conv != ConvMode.BITCAST) {} else {}
-                return "TODO";
+                if (conv != ConvMode.BITCAST) {
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = sext {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+                } else {
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+                }
+                return result;
             }
 
             if (to.isFloat() or to.isDouble()) {
                 if (conv != ConvMode.BITCAST) {
-                    return "TODO";
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = sitofp {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+
+                    return result;
                 }
 
                 var t = if (to.isFloat())
@@ -2061,21 +2292,59 @@ pub const Parser = struct {
 
                 if (false) {
                     // `from` has bit width greater than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
+                            temp,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(t.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else if (false) {
                     // `from` has bit width smaller than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                            temp,
+                            codegen.llvmType(from.*),
+                            what,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else {
                     // `from` and `t` have the same bid width.
-                    // temp = what;
+                    temp = what;
                 }
 
-                return "TODO";
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(t.*),
+                        temp,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
 
             if (to.isNumeric()) {
                 // `to` is numeric and has greater bit width than `from`.
-                return "TODO";
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (to.isNumeric()) {
@@ -2084,29 +2353,123 @@ pub const Parser = struct {
             }
 
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = icmp ne {s} {s}, 0", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isBool() or to.isNumeric()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(to.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isArray()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = inttoptr {s} {s} to ptr", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
 
-            return "TODO";
+            return result;
         }
 
         if (from.isFloat() or from.isDouble()) {
             if (to.isFloat()) {
                 if (conv != ConvMode.BITCAST) {
-                    return "TODO";
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = fptrunc double {s} to float", .{
+                            result,
+                            what,
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+
+                    return result;
                 }
-                return "TODO";
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast double {s} to i64", .{
+                        temp,
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                var trunc = self.c.genLLVMNameEmpty();
+                defer self.alloc.free(trunc);
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = trunc i64 {s} to i32", .{
+                        trunc,
+                        temp,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i32 {s} to float", .{
+                        result,
+                        trunc,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (to.isDouble()) {
                 if (conv != ConvMode.BITCAST) {
-                    return "TODO";
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = fpext float {s} to double", .{
+                            result,
+                            what,
+                        }) catch unreachable,
+                        blockIndex,
+                    );
+
+                    return result;
                 }
-                return "TODO";
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast float {s} to i32", .{
+                        temp,
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                var ext = self.c.genLLVMNameEmpty();
+                defer self.alloc.free(ext);
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = zext i32 {s} to i64", .{
+                        ext,
+                        temp,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast i64 {s} to double", .{
+                        result,
+                        ext,
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
@@ -2114,11 +2477,28 @@ pub const Parser = struct {
             if (to.isNumeric() or (conv == ConvMode.BITCAST) and (to.isBool())) {
                 if (conv != ConvMode.BITCAST) {
                     if (!to.isSigned()) {
-                        //
+                        self.c.emit(
+                            std.fmt.allocPrint(self.alloc, "{s} = fptoui {s} {s} to {s}", .{
+                                result,
+                                codegen.llvmType(from.*),
+                                what,
+                                codegen.llvmType(to.*),
+                            }) catch unreachable,
+                            blockIndex,
+                        );
                     } else {
-                        //
+                        self.c.emit(
+                            std.fmt.allocPrint(self.alloc, "{s} = fptosi {s} {s} to {s}", .{
+                                result,
+                                codegen.llvmType(from.*),
+                                what,
+                                codegen.llvmType(to.*),
+                            }) catch unreachable,
+                            blockIndex,
+                        );
                     }
-                    return "TODO";
+
+                    return result;
                 }
 
                 var t = if (from.isFloat())
@@ -2126,27 +2506,82 @@ pub const Parser = struct {
                 else
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast {s} {s} to {s}", .{
+                        temp,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(t.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
 
                 if (false) {
                     // `to` has smaller bit width than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(t.*),
+                            temp,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else if (false) {
                     // `to` has greater bit width than `t`.
+                    self.c.emit(
+                        std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
+                            result,
+                            codegen.llvmType(t.*),
+                            temp,
+                            codegen.llvmType(to.*),
+                        }) catch unreachable,
+                        blockIndex,
+                    );
                 } else {
-                    // result = temp;
+                    // TODO: I think the construct `result = temp` won't work due to memory either leaking
+                    // or being destroyed eagerly by the defer at the beginning of this function.
+                    // FIXME: Fix me.
+                    result = temp;
                 }
             } else if (to.isBool()) {
-                //
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = fcmp une {s} {s}, 0.0", .{
+                        result,
+                        codegen.llvmType(from.*),
+                        what,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else if (to.isArray()) {
-                //
-                //
                 var t = if (from.isFloat())
                     types.SimpleType.create(self.alloc, types.SimpleType.U32)
                 else
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = bitcast {s} {s} to {s}", .{
+                        temp,
+                        codegen.llvmType(from.*),
+                        what,
+                        codegen.llvmType(t.*),
+                    }) catch unreachable,
+                    blockIndex,
+                );
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "{s} = inttoptr {s} {s} to ptr", .{
+                        result,
+                        codegen.llvmType(t.*),
+                        temp,
+                    }) catch unreachable,
+                    blockIndex,
+                );
             } else unreachable;
 
-            return "TODO";
+            return result;
         }
 
         unreachable;

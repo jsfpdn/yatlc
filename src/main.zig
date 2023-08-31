@@ -110,11 +110,7 @@ pub fn main() !void {
     defer p.deinit();
     defer c.deinit();
 
-    p.parse() catch {};
-
-    c.write(llvmFile.writer()) catch |err| {
-        fatal("could not emit LLVM IR: {s}", .{@errorName(err)});
-    };
+    p.parse(llvmFile.writer()) catch {};
 }
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {

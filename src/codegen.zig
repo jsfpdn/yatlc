@@ -15,37 +15,40 @@ pub const CodeGen = struct {
     waits: bool,
 
     pub fn init(alloc: std.mem.Allocator) CodeGen {
-        return CodeGen{
+        var c = CodeGen{
             .alloc = alloc,
             .triple = "TODO",
-            .segments = std.ArrayList([]const u8).initCapacity(alloc, 3) catch unreachable,
+            .segments = std.ArrayList([]const u8).init(alloc),
             .waitingBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .currentBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .waits = false,
         };
+
+        return c;
     }
 
     pub fn deinit(self: *CodeGen) void {
-        for (self.segments.items) |b| self.alloc.free(b);
+        for (self.segments.items) |b| {
+            self.alloc.free(b);
+        }
         self.segments.deinit();
         self.alloc.free(self.waitingBlock);
         self.alloc.free(self.currentBlock);
     }
 
     pub fn newSegment(self: *CodeGen) void {
-        self.segments.append(std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable) catch unreachable;
+        var s = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
+        self.segments.append(s) catch unreachable;
     }
 
     /// emitA takes a string and appends it immediately after the contents of the last segment.
     pub fn emitA(self: *CodeGen, string: []const u8) void {
         defer self.alloc.free(string);
 
-        var s = self.segments.pop();
+        var s = self.segments.items[self.lastBlockIndex()];
         defer self.alloc.free(s);
 
-        var ns = std.fmt.allocPrint(self.alloc, "{s}{s}", .{ s, string }) catch unreachable;
-
-        self.segments.append(ns) catch unreachable;
+        self.segments.items[self.lastBlockIndex()] = std.fmt.allocPrint(self.alloc, "{s}{s}", .{ s, string }) catch unreachable;
     }
 
     /// emitInit takes a string, adds two spaces in front and a newline after and appends it
@@ -56,8 +59,7 @@ pub const CodeGen = struct {
         var s = self.segments.items[0];
         defer self.alloc.free(s);
 
-        var ns = std.fmt.allocPrint(self.alloc, "{s}  {s}\n", .{ s, string }) catch unreachable;
-        self.segments.items[0] = ns;
+        self.segments.items[0] = std.fmt.allocPrint(self.alloc, "{s}  {s}\n", .{ s, string }) catch unreachable;
     }
 
     /// emitBlock emits instructions that open a new block with the provided name.
@@ -65,11 +67,10 @@ pub const CodeGen = struct {
     pub fn emitBlock(self: *CodeGen, blockName: []const u8) void {
         self.waits = false;
 
-        var s = self.segments.items[self.segments.items.len - 1];
+        var s = self.segments.items[self.lastBlockIndex()];
         defer self.alloc.free(s);
 
-        var ns = std.fmt.allocPrint(self.alloc, "{s}\n{s}:", .{ s, blockName[1..] }) catch unreachable;
-        self.segments.items[self.segments.items.len - 1] = ns;
+        self.segments.items[self.lastBlockIndex()] = std.fmt.allocPrint(self.alloc, "{s}\n{s}:", .{ s, blockName[1..] }) catch unreachable;
 
         self.alloc.free(self.currentBlock);
         self.currentBlock = std.fmt.allocPrint(self.alloc, "{s}", .{blockName}) catch unreachable;
@@ -109,9 +110,16 @@ pub const CodeGen = struct {
         return llvmName;
     }
 
+    pub fn genLLVMNameEmpty(self: *CodeGen) []const u8 {
+        var llvmName = std.fmt.allocPrint(self.alloc, "%{d}", .{self.commandNum}) catch unreachable;
+        self.commandNum += 1;
+        return llvmName;
+    }
+
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
-        for (self.segments.items) |segment|
-            _ = writer.write(segment) catch unreachable;
+        for (self.segments.items) |segment| {
+            _ = try writer.write(segment);
+        }
     }
 
     test "emitting" {
