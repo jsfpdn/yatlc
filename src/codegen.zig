@@ -1,7 +1,11 @@
 const std = @import("std");
 
+const parser = @import("parser.zig");
+const tokens = @import("token.zig");
 const types = @import("types.zig");
 const symbols = @import("symbols.zig");
+
+const tt = tokens.TokenType;
 
 pub const CodeGen = struct {
     alloc: std.mem.Allocator,
@@ -70,7 +74,7 @@ pub const CodeGen = struct {
         var s = self.segments.items[self.lastBlockIndex()];
         defer self.alloc.free(s);
 
-        self.segments.items[self.lastBlockIndex()] = std.fmt.allocPrint(self.alloc, "{s}\n{s}:", .{ s, blockName[1..] }) catch unreachable;
+        self.segments.items[self.lastBlockIndex()] = std.fmt.allocPrint(self.alloc, "{s}\n{s}:\n", .{ s, blockName[1..] }) catch unreachable;
 
         self.alloc.free(self.currentBlock);
         self.currentBlock = std.fmt.allocPrint(self.alloc, "{s}", .{blockName}) catch unreachable;
@@ -83,7 +87,7 @@ pub const CodeGen = struct {
         self.waitingBlock = std.fmt.allocPrint(self.alloc, "{s}", .{blockName}) catch unreachable;
 
         self.alloc.free(self.currentBlock);
-        self.waitingBlock = std.fmt.allocPrint(self.alloc, "{s}", .{blockName}) catch unreachable;
+        self.currentBlock = std.fmt.allocPrint(self.alloc, "{s}", .{blockName}) catch unreachable;
     }
 
     pub fn emit(self: *CodeGen, string: []const u8, index: usize) void {
@@ -171,6 +175,37 @@ pub fn llvmType(t: types.Type) []const u8 {
         },
         types.TypeTag.array => "ptr",
         types.TypeTag.constant => "TODO!",
+        else => unreachable,
+    };
+}
+
+pub fn llvmOp(t: types.Type, op: tokens.TokenType) []const u8 {
+    switch (op) {
+        tt.LSH_ASSIGN => return "shl",
+        tt.RSH_ASSIGN => return if (t.isSigned()) "ashr" else "lshr",
+        tt.AND_ASSIGN => return "and",
+        tt.XOR_ASSIGN => return "xor",
+        tt.LOR_ASSIGN => return "or",
+        else => {},
+    }
+
+    if (t.isDouble() or t.isFloat()) {
+        return switch (op) {
+            tt.ADD_ASSIGN => "fadd",
+            tt.SUB_ASSIGN => "fsub",
+            tt.MUL_ASSIGN => "fmul",
+            tt.QUO_ASSIGN => "fdiv",
+            tt.REM_ASSIGN => "frem",
+            else => unreachable,
+        };
+    }
+
+    return switch (op) {
+        tt.ADD_ASSIGN => "add",
+        tt.SUB_ASSIGN => "sub",
+        tt.MUL_ASSIGN => "mul",
+        tt.QUO_ASSIGN => if (t.isSigned()) "sdiv" else "udiv",
+        tt.REM_ASSIGN => if (t.isSigned()) "srem" else "urem",
         else => unreachable,
     };
 }

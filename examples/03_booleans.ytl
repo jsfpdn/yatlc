@@ -1,0 +1,13 @@
+
+i32 main() {
+    bool a = true;
+    bool b = false;
+
+    bool c = a && b && b && a || a;
+
+    bool d = a || b || b || a && c;
+
+    bool e = (c and b) or (b and c);
+
+    return @i32(0);
+}
