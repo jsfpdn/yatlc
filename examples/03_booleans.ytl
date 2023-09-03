@@ -9,5 +9,7 @@ i32 main() {
 
     bool e = (c and b) or (b and c);
 
+    bool f = 10 < 12;
+
     return @i32(0);
 }

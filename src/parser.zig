@@ -15,11 +15,11 @@ pub const Expression = struct {
     t: ?*types.Type = null,
     lt: ?*types.Type = null,
 
-    rValue: []const u8 = "TBD:RVALUE",
+    rValue: ?[]const u8 = null,
 
     hasLValue: bool = false,
     lValueComputed: bool = false,
-    lValue: []const u8 = "TBD:LVALUE",
+    lValue: ?[]const u8 = null,
 
     semiMustFollow: bool = false,
     endsWithReturn: bool = false,
@@ -27,23 +27,45 @@ pub const Expression = struct {
     callsFunction: bool = false,
 
     pub fn destroy(self: Expression, alloc: std.mem.Allocator) void {
-        // TODO: lValue and rValue should be released here as well.
         if (self.t) |t| t.destroy(alloc);
         if (self.lt) |lt| lt.destroy(alloc);
+
+        if (self.rValue) |rv| alloc.free(rv);
+        if (self.hasLValue) if (self.lValue) |lv| alloc.free(lv);
+    }
+
+    pub fn destroyRValue(self: *Expression, alloc: std.mem.Allocator) void {
+        if (self.rValue) |rv| alloc.free(rv);
+        self.rValue = null;
+    }
+
+    pub fn destroyLValue(self: *Expression, alloc: std.mem.Allocator) void {
+        if (self.lValue) |lv| alloc.free(lv);
+        self.lValue = null;
+        self.hasLValue = false;
+    }
+
+    pub fn setLValue(self: *Expression, alloc: std.mem.Allocator, lvalue: []const u8) void {
+        self.destroyLValue(alloc);
+        self.lValue = lvalue;
+        self.hasLValue = true;
     }
 
     pub fn clone(self: Expression, alloc: std.mem.Allocator) Expression {
-        return Expression{
+        var exp = Expression{
             .t = if (self.t) |t| t.clone(alloc) else null,
             .lt = if (self.lt) |lt| lt.clone(alloc) else null,
-            .rValue = self.rValue,
             .hasLValue = self.hasLValue,
             .lValueComputed = self.lValueComputed,
-            .lValue = self.lValue,
             .semiMustFollow = self.semiMustFollow,
             .endsWithReturn = self.endsWithReturn,
             .callsFunction = self.callsFunction,
         };
+
+        if (self.rValue) |rv| exp.rValue = std.fmt.allocPrint(alloc, "{s}", .{rv}) catch unreachable;
+        if (self.lValue) |lv| exp.lValue = std.fmt.allocPrint(alloc, "{s}", .{lv}) catch unreachable;
+
+        return exp;
     }
 };
 
@@ -64,8 +86,10 @@ pub const Parser = struct {
     // TODO:
     // * constant folding
     // * IR emitter
-    //      * do not leak returned values from `self.convert` (is it exp.r?)
     //      * fix potential issue in the convert function w/ memory leak when `result = temp;`
+    //      * type conversions: minimumSignedType and Parser.convert
+    //      * handling multiple functions
+    //      * fix return statements
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -250,7 +274,7 @@ pub const Parser = struct {
                                 self.c.lastBlockIndex(),
                             );
                         } else {
-                            var retVal = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue, self.c.lastBlockIndex()) catch {
+                            var retVal = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch {
                                 self.report(fs.location, reporter.Level.ERROR, "cannot return value of type {s} from function that must return {s}", .{ exp.t.?.str(), self.returnType.?.str() }, true, true);
                                 return SyntaxError.TypeError;
                             };
@@ -361,7 +385,7 @@ pub const Parser = struct {
             {
                 argNames = argNamesE.Unnamed;
                 s.location = undefined;
-                s.llvmName = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
+                s.llvmName = std.fmt.allocPrint(self.alloc, "TBD", .{}) catch unreachable;
             } else {
                 argNames = argNamesE.Named;
                 const id = try self.consumeGet(tt.IDENT);
@@ -426,6 +450,7 @@ pub const Parser = struct {
 
         var tok = self.s.peek();
         if (tok.tokenType == tt.RBRACE) {
+            // TODO: Is this condition even correct?
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .lt = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
@@ -590,7 +615,7 @@ pub const Parser = struct {
 
         self.c.emit(
             std.fmt.allocPrint(self.alloc, "br i1 {s}, label {s}, label {s}", .{
-                condExp.rValue,
+                condExp.rValue.?,
                 bodyBlockName,
                 endBlockName,
             }) catch unreachable,
@@ -672,7 +697,7 @@ pub const Parser = struct {
             std.fmt.allocPrint(
                 self.alloc,
                 "br i1 {s}, label {s}, label {s}",
-                .{ exp.rValue, bodyBlockName, endBlockName },
+                .{ exp.rValue.?, bodyBlockName, endBlockName },
             ) catch unreachable,
             self.c.lastBlockIndex(),
         );
@@ -756,7 +781,7 @@ pub const Parser = struct {
 
         self.c.emit(
             std.fmt.allocPrint(self.alloc, "br i1 {s}, label {s}, label {s}", .{
-                exp.rValue,
+                exp.rValue.?,
                 bodyBlockName,
                 endBlockName,
             }) catch unreachable,
@@ -783,16 +808,8 @@ pub const Parser = struct {
 
         try self.consume(tt.RBRACE);
 
-        return Expression{
-            .t = exp.t,
-            .lt = exp.lt,
-            .rValue = exp.rValue,
-            .hasLValue = exp.hasLValue,
-            .lValue = exp.lValue,
-            .semiMustFollow = false,
-            .endsWithReturn = exp.endsWithReturn,
-            .callsFunction = exp.callsFunction,
-        };
+        exp.semiMustFollow = false;
+        return exp;
     }
 
     fn parseReturn(self: *Parser) SyntaxError!Expression {
@@ -828,7 +845,13 @@ pub const Parser = struct {
                 var retExp = try self.parseSubExpression();
                 defer retExp.destroy(self.alloc);
 
-                const value = self.convert(self.returnType.?, retExp.t.?, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                const value = self.convert(
+                    self.returnType.?,
+                    retExp.t.?,
+                    ConvMode.IMPLICIT,
+                    retExp.rValue.?,
+                    self.c.lastBlockIndex(),
+                ) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(
                             ret,
@@ -850,6 +873,8 @@ pub const Parser = struct {
 
                     return SyntaxError.TypeError;
                 };
+
+                defer self.alloc.free(value);
 
                 if (!self.returnType.?.isUnit()) {
                     self.c.emit(
@@ -951,6 +976,7 @@ pub const Parser = struct {
             exp.t = identType.?.clone(self.alloc);
             exp.semiMustFollow = true;
             exp.hasLValue = true;
+            exp.lValue = llvmName;
 
             if (!identType.?.isUnit()) {
                 self.c.emitInit(
@@ -962,6 +988,7 @@ pub const Parser = struct {
             }
         } else {
             declaration = false;
+            // TODO: Bus error here?
             exp = try self.parseTernaryExpression();
         }
 
@@ -982,13 +1009,13 @@ pub const Parser = struct {
                 defer subExp.destroy(self.alloc);
 
                 if (exp.t.?.isUnit() and subExp.t.?.isUnit()) {} else {
-                    const value = self.convert(subExp.t.?, exp.t.?, ConvMode.IMPLICIT, subExp.rValue, self.c.lastBlockIndex()) catch |err| {
+                    var value = self.convert(subExp.t.?, exp.t.?, ConvMode.IMPLICIT, subExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                         switch (err) {
                             ConvErr.Overflow => self.report(
                                 identTok.?,
                                 reporter.Level.ERROR,
                                 "cannot cast value of type {s} to {s} due to possible overflow",
-                                .{ subExp.t.?.str(), identType.?.str() },
+                                .{ subExp.t.?.str(), exp.t.?.str() },
                                 true,
                                 true,
                             ),
@@ -996,7 +1023,7 @@ pub const Parser = struct {
                                 identTok.?,
                                 reporter.Level.ERROR,
                                 "cannot cast value of type {s} to {s}",
-                                .{ subExp.t.?.str(), identType.?.str() },
+                                .{ subExp.t.?.str(), exp.t.?.str() },
                                 true,
                                 true,
                             ),
@@ -1009,26 +1036,23 @@ pub const Parser = struct {
                         std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{
                             codegen.llvmType(exp.t.?.*),
                             value,
-                            exp.lValue,
+                            exp.lValue.?,
                         }) catch unreachable,
                         self.c.lastBlockIndex(),
                     );
-                }
 
-                // TODO: Refactor this.
-                exp.semiMustFollow = true;
+                    self.alloc.free(value);
+                }
 
                 exp.t.?.destroy(self.alloc);
                 exp.t = subExp.t.?.clone(self.alloc);
-                if (subExp.lt) |slt| {
-                    if (exp.lt) |lt| lt.destroy(self.alloc);
-                    exp.lt = slt.clone(self.alloc);
-                }
-                exp.rValue = subExp.rValue;
-                exp.hasLValue = subExp.hasLValue;
-                exp.lValue = subExp.lValue;
+
+                exp.destroyRValue(self.alloc);
+                exp.rValue = self.createString("{s}", .{subExp.rValue.?});
+
+                // exp.lValue does not change.
+                exp.hasLValue = true;
                 exp.semiMustFollow = true;
-                exp.endsWithReturn = false;
                 exp.callsFunction = exp.callsFunction or subExp.callsFunction;
             },
             tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
@@ -1046,7 +1070,7 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
-                const value = self.convert(rhsExp.t.?, exp.lt.?, ConvMode.IMPLICIT, rhsExp.rValue, self.c.lastBlockIndex()) catch |err| {
+                const value = self.convert(rhsExp.t.?, exp.lt.?, ConvMode.IMPLICIT, rhsExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(
                             assignTok,
@@ -1068,11 +1092,15 @@ pub const Parser = struct {
 
                     return SyntaxError.TypeError;
                 };
+                defer self.alloc.free(value);
 
                 var rvalue = self.emitOpAssign(assignTok.tokenType, exp, rhsExp, value);
 
                 exp.semiMustFollow = true;
+
+                exp.destroyRValue(self.alloc);
                 exp.rValue = rvalue;
+
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
@@ -1095,7 +1123,9 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
-                exp.rValue = rhsExp.rValue;
+                exp.destroyRValue(self.alloc);
+                exp.rValue = self.createString("{s}", .{rhsExp.rValue.?});
+
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
@@ -1132,7 +1162,7 @@ pub const Parser = struct {
         };
         self.st.insert(s) catch unreachable;
 
-        return s.llvmName;
+        return self.createString("{s}", .{s.llvmName});
     }
 
     // E^2
@@ -1146,7 +1176,7 @@ pub const Parser = struct {
             return exp;
         }
 
-        if (!exp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
+        if (!exp.t.?.isBool()) {
             self.report(tok, reporter.Level.ERROR, "non-boolean condition in a ternary operator statement", .{}, true, true);
             return SyntaxError.TypeError;
         }
@@ -1178,6 +1208,7 @@ pub const Parser = struct {
                 exp.lt = if (exp2.lt.?.equals(exp3.lt.?.*)) exp2.lt.?.clone(self.alloc) else null;
                 // TODO: Expression attribute rValue: result of `select` instruction.
                 exp.hasLValue = if (exp2.lt.?.equals(exp3.lt.?.*)) true else false;
+                // TODO: exp.hasLValue = ...
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
@@ -1197,7 +1228,7 @@ pub const Parser = struct {
 
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "br i1 {s}, label {s}, label {s}", .{
-                        exp.rValue,
+                        exp.rValue.?,
                         thenBlockName,
                         elseBlockName,
                     }) catch unreachable,
@@ -1217,6 +1248,7 @@ pub const Parser = struct {
                 );
 
                 var jumpFromThen = std.fmt.allocPrint(self.alloc, "{s}", .{self.c.currentBlock}) catch unreachable;
+                self.alloc.free(jumpFromThen);
 
                 try self.consume(tt.COLON);
 
@@ -1234,6 +1266,7 @@ pub const Parser = struct {
                 );
 
                 var jumpFromElse = std.fmt.allocPrint(self.alloc, "{s}", .{self.c.currentBlock}) catch unreachable;
+                self.alloc.free(jumpFromElse);
 
                 self.c.emitBlock(nextBlockName);
 
@@ -1243,19 +1276,22 @@ pub const Parser = struct {
                 };
 
                 // TODO: Improve error handling.
-                var thenConv = self.convert(exp2.t.?, t, ConvMode.IMPLICIT, exp2.rValue, thenBackpatchingIndex) catch return SyntaxError.TypeError;
-                var elseConv = self.convert(exp3.t.?, t, ConvMode.IMPLICIT, exp3.rValue, elseBackpatchingIndex) catch return SyntaxError.TypeError;
+                var thenConv = self.convert(exp2.t.?, t, ConvMode.IMPLICIT, exp2.rValue.?, thenBackpatchingIndex) catch return SyntaxError.TypeError;
+                defer self.alloc.free(thenConv);
 
-                var result: []const u8 = "";
+                var elseConv = self.convert(exp3.t.?, t, ConvMode.IMPLICIT, exp3.rValue.?, elseBackpatchingIndex) catch return SyntaxError.TypeError;
+                defer self.alloc.free(elseConv);
+
+                var result: ?[]const u8 = null;
                 if (exp2.hasLValue and exp3.hasLValue and exp2.lt.?.equals(exp3.lt.?.*)) {
                     if (!exp2.lt.?.isUnit()) {
                         result = self.c.genLLVMNameEmpty();
                         self.c.emit(
                             std.fmt.allocPrint(self.alloc, "{s} = phi ptr [ {s}, {s} ], [ {s}, {s} ]", .{
-                                result,
-                                exp2.lValue,
+                                result.?,
+                                exp2.lValue.?,
                                 jumpFromThen,
-                                exp3.lValue,
+                                exp3.lValue.?,
                                 jumpFromElse,
                             }) catch unreachable,
                             self.c.lastBlockIndex(),
@@ -1264,7 +1300,8 @@ pub const Parser = struct {
                 }
 
                 if (t.isConstant()) {
-                    // TODO: Implement me!
+                    // TODO: Implement me:
+                    // var t = minimumSignedType(...);
                 }
 
                 if (!t.isUnit()) {
@@ -1272,7 +1309,7 @@ pub const Parser = struct {
 
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = phi {s} [ {s}, {s} ], [ {s}, {s} ]", .{
-                            result,
+                            result.?,
                             codegen.llvmType(t.*),
                             thenConv,
                             jumpFromThen,
@@ -1284,11 +1321,18 @@ pub const Parser = struct {
                 }
 
                 // Destroy the previous type and replace it with the new supertype.
-                exp.destroy(self.alloc);
+                exp.t.?.destroy(self.alloc);
+                exp.lt.?.destroy(self.alloc);
                 exp.t = t;
                 exp.lt = if (exp2.lt.?.equals(exp3.lt.?.*)) exp2.lt.?.clone(self.alloc) else null;
+
+                // TODO: exp.lValue = ...
+                // TODO: exp.hasLValue = ...
                 exp.hasLValue = if (exp2.lt.?.equals(exp3.lt.?.*)) true else false;
+
+                exp.destroyRValue(self.alloc);
                 exp.rValue = result;
+
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
@@ -1316,7 +1360,7 @@ pub const Parser = struct {
             return SyntaxError.TypeError;
         }
 
-        var lastValue: []const u8 = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue}) catch unreachable;
+        var lastValue: []const u8 = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
         var inheritedEnd: ?[]const u8 = null;
         var end: ?[]const u8 = null;
         var intermediateResult: ?[]const u8 = null;
@@ -1359,7 +1403,7 @@ pub const Parser = struct {
                         exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
                     } else {
                         for (toEnd.items) |te| self.alloc.free(te);
                         toEnd.resize(0) catch unreachable;
@@ -1395,7 +1439,7 @@ pub const Parser = struct {
                         exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
 
                         if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                             self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
@@ -1477,7 +1521,7 @@ pub const Parser = struct {
                         exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
                     } else {
                         for (toEnd.items) |te| self.alloc.free(te);
                         toEnd.resize(0) catch unreachable;
@@ -1513,7 +1557,7 @@ pub const Parser = struct {
                         exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
 
                         if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                             self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
@@ -1596,7 +1640,7 @@ pub const Parser = struct {
                             intermediateResult.?,
                             if (tok.tokenType == tt.OR) "or" else "and",
                             lastValue,
-                            nExp.rValue,
+                            nExp.rValue.?,
                         }) catch unreachable,
                         self.c.lastBlockIndex(),
                     );
@@ -1633,7 +1677,18 @@ pub const Parser = struct {
                 return SyntaxError.TypeError;
             }
 
-            exp.hasLValue = false;
+            var result = self.c.genLLVMNameEmpty();
+
+            self.c.emit(
+                std.fmt.allocPrint(self.alloc, "{s} = xor i1 {s}, -1", .{ result, exp.rValue.? }) catch unreachable,
+                self.c.lastBlockIndex(),
+            );
+
+            exp.destroyRValue(self.alloc);
+            exp.rValue = result;
+
+            exp.destroyLValue(self.alloc);
+
             exp.semiMustFollow = true;
             exp.endsWithReturn = false;
             return exp;
@@ -1651,20 +1706,24 @@ pub const Parser = struct {
             return xExp;
         }
 
-        var accResult: []const u8 = ""; // Accumulated result of all the comparisons together.
-        var result: []const u8 = ""; // Current result.
+        var accResult: ?[]const u8 = null; // Accumulated result of all the comparisons together.
+        var result: ?[]const u8 = null; // Current result.
+        defer if (result) |res| self.alloc.free(res);
+        defer if (accResult) |ar| self.alloc.free(ar);
+
         while (tt.isRelational(self.s.peek().tokenType)) {
             var op = self.s.next();
             var yExp = try self.parseArithmeticExpression();
             defer yExp.destroy(self.alloc);
 
+            // FIXME: No common supertype for array and array is found.
             var t: *types.Type = types.leastSupertype(self.alloc, xExp.t.?, yExp.t.?) orelse {
                 self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
                 return SyntaxError.TypeError;
             };
             defer t.destroy(self.alloc);
 
-            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                 // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                 switch (err) {
                     ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1672,9 +1731,9 @@ pub const Parser = struct {
                 }
                 return SyntaxError.TypeError;
             };
-            _ = valX;
+            defer self.alloc.free(valX);
 
-            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                 // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                 switch (err) {
                     ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1682,50 +1741,89 @@ pub const Parser = struct {
                 }
                 return SyntaxError.TypeError;
             };
-            _ = valY;
+            defer self.alloc.free(valY);
 
             switch (t.*) {
                 types.TypeTag.simple => |simpleType| {
                     if (simpleType == types.SimpleType.UNIT) {
                         switch (op.tokenType) {
-                            tt.EQL => result = "1",
-                            tt.NEQ => result = "0",
+                            tt.EQL => result = self.createString("1", .{}),
+                            tt.NEQ => result = self.createString("0", .{}),
                             // Even though we hit type error, we can continue with the parsing.
                             else => self.report(op, reporter.Level.ERROR, "unit type can be only tested for equality and inequality", .{}, true, true),
                         }
-                    } else if (simpleType == types.SimpleType.FLOAT or simpleType == types.SimpleType.DOUBLE) {
-                        // TODO: Generate IR depending on the operation.
+                    } else if (t.isFloat() or t.isDouble()) {
+                        const inst = codegen.llvmFloatOp(op.tokenType);
+                        if (result) |res| self.alloc.free(res);
+                        result = self.c.genLLVMNameEmpty();
+
+                        self.c.emit(
+                            self.createString("{s} = fcmp {s} {s} {s}, {s}", .{
+                                result.?,
+                                inst,
+                                codegen.llvmType(t.*),
+                                valX,
+                                valY,
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
                     } else {
                         // Type must be one of [u64...u8, i64...i8, bool].
-                        // TODO: Generate IR depending on the operation. Think about signedness.
+                        if (result) |res| self.alloc.free(res);
+                        result = self.c.genLLVMNameEmpty();
+
+                        const prefix = if (op.tokenType == tt.EQL or op.tokenType == tt.NEQ) "" else if (t.isSigned()) "s" else "u";
+                        const llvmOp = codegen.llvmIntOp(op.tokenType);
+
+                        self.c.emit(
+                            self.createString("{s} = icmp {s}{s} {s} {s}, {s}", .{
+                                result.?,
+                                prefix,
+                                llvmOp,
+                                codegen.llvmType(t.*),
+                                valX,
+                                valY,
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
                     }
                 },
                 types.TypeTag.constant => {
-                    // TODO: The actual value of the constant is not stored in the type anymore
-                    // but MUST be in the expression itself. Create a helper function that will do
-                    // the appropriate comparisons and return the result, "0" or "1".
-                    // result = switch (op.tokenType) {
-                    //     tt.EQL => if (xExp.t.constant.int == yExp.t.constant.int) "1" else "0",
-                    //     tt.LT => if (xExp.t.constant.int < yExp.t.constant.int) "1" else "0",
-                    //     tt.GT => if (xExp.t.constant.int > yExp.t.constant.int) "1" else "0",
-                    //     tt.NEQ => if (xExp.t.constant.int != yExp.t.constant.int) "1" else "0",
-                    //     tt.LEQ => if (xExp.t.constant.int <= yExp.t.constant.int) "1" else "0",
-                    //     tt.GEQ => if (xExp.t.constant.int >= yExp.t.constant.int) "1" else "0",
-                    //     else => unreachable,
-                    // };
+                    if (result) |res| self.alloc.free(res);
+                    result = self.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?);
                 },
                 types.TypeTag.array => {
-                    // TODO: Generate IR for tt.EQL and tt.NEQ to just compare pointers.
+                    if (result) |res| self.alloc.free(res);
+                    result = self.c.genLLVMNameEmpty();
+
+                    switch (op.tokenType) {
+                        tt.EQL => self.c.emit(
+                            self.createString("{s} = icmp eq ptr {s}, {s}", .{ result.?, valX, valY }),
+                            self.c.lastBlockIndex(),
+                        ),
+                        tt.NEQ => self.c.emit(
+                            self.createString("{s} = icmp ne ptr {s}, {s}", .{ result.?, valX, valY }),
+                            self.c.lastBlockIndex(),
+                        ),
+                        else => self.report(op, reporter.Level.ERROR, "pointer type can be only tested for equality and inequality", .{}, true, true),
+                    }
                 },
                 // The only way we get here is if the common least supertype is function and that cannot happen.
                 else => unreachable,
             }
 
-            if (!std.mem.eql(u8, accResult, "")) {
+            if (accResult) |ar| {
                 // Combine current result with previous results.
-                // TODO: Generate IR and update `accResult`.
+                var newAccRes = self.c.genLLVMNameEmpty();
+                self.c.emit(
+                    self.createString("{s} = and i1 {s}, {s}", .{ newAccRes, accResult.?, result.? }),
+                    self.c.lastBlockIndex(),
+                );
+                self.alloc.free(ar);
+                accResult = newAccRes;
             } else {
-                accResult = result;
+                if (accResult) |ar| self.alloc.free(ar);
+                accResult = self.createString("{s}", .{result.?});
             }
 
             // Replace the type of the expression with the new supertype.
@@ -1736,8 +1834,12 @@ pub const Parser = struct {
 
         xExp.t.?.destroy(self.alloc);
         xExp.t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL);
-        // xExp.rValue = something to do with the accResult
-        xExp.hasLValue = false;
+
+        xExp.destroyRValue(self.alloc);
+        xExp.rValue = self.createString("{s}", .{accResult.?});
+
+        xExp.destroyLValue(self.alloc);
+
         xExp.semiMustFollow = true;
         xExp.endsWithReturn = false;
         return xExp;
@@ -1758,8 +1860,7 @@ pub const Parser = struct {
             return SyntaxError.TypeError;
         }
 
-        var result = "";
-        _ = result;
+        var result: ?[]const u8 = null;
         while (tt.isLowerPrioArithmetic(self.s.peek().tokenType)) {
             var op = self.s.next();
 
@@ -1787,24 +1888,11 @@ pub const Parser = struct {
             }
 
             if (t.isConstant()) {
-                // TODO: The actual value of the constant is not stored in the type anymore
-                // but MUST be in the expression itself. Create a helper function that will do
-                // the appropriate comparisons and return the result.
-                // t.constant.int = switch (op.tokenType) {
-                //     tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
-                //     tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
-                //     // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
-                //     // compiler error: error: expected type 'u7', found 'i128'
-                //     // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
-                //     // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
-                //     tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
-                //     tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
-                //     tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
-                //     else => unreachable,
-                // };
+                var a = self.evalConstant(op.tokenType, xExp.lValue.?, yExp.lValue.?);
+                self.alloc.free(a);
                 // TODO: Set expression attributes.
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1812,9 +1900,9 @@ pub const Parser = struct {
                     }
                     return SyntaxError.TypeError;
                 };
-                _ = valX;
+                defer self.alloc.free(valX);
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1822,10 +1910,22 @@ pub const Parser = struct {
                     }
                     return SyntaxError.TypeError;
                 };
-                _ = valY;
+                defer self.alloc.free(valY);
 
-                // TODO: Emit IR depending on the operation and expression type.
-                // TODO: Set expression attributes.
+                if (result) |res| self.alloc.free(res);
+                result = self.c.genLLVMNameEmpty();
+
+                const opPrefix = if (op.tokenType == tt.B_RSH) if (t.isSigned()) "a" else "l" else "";
+                const llvmType = codegen.llvmType(t.*);
+                const llvmOp = if (t.isFloat() or t.isDouble())
+                    codegen.llvmFloatOp(op.tokenType)
+                else
+                    codegen.llvmIntOp(op.tokenType);
+
+                self.c.emit(
+                    self.createString("{s} = {s}{s} {s} {s}, {s}", .{ result.?, opPrefix, llvmOp, llvmType, valX, valY }),
+                    self.c.lastBlockIndex(),
+                );
             }
             // Replace the type of the expression with the new supertype.
             xExp.t.?.destroy(self.alloc);
@@ -1833,8 +1933,11 @@ pub const Parser = struct {
             xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
-        // TODO: xExp.rValue
-        xExp.hasLValue = false;
+        xExp.destroyRValue(self.alloc);
+        xExp.rValue = result.?;
+
+        xExp.destroyLValue(self.alloc);
+
         xExp.semiMustFollow = true;
         xExp.endsWithReturn = false;
         return xExp;
@@ -1860,13 +1963,55 @@ pub const Parser = struct {
                     // but MUST be in the expression itself.
                     // exp.t.constant.int = -exp.t.constant.int;
                 } else {
-                    // TODO: Emit IR depending on the operation and expression type.
-                    // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
-                    // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
-                    // since there is no i128.
+                    var result = self.c.genLLVMNameEmpty();
+                    defer self.alloc.free(result);
+
+                    if (exp.t.?.isDouble() or exp.t.?.isFloat()) {
+                        self.c.emit(
+                            self.createString("{s} = fneg {s} {s}", .{ result, codegen.llvmType(exp.t.?.*), exp.rValue.? }),
+                            self.c.lastBlockIndex(),
+                        );
+                    } else if (exp.t.?.isSigned()) {
+                        self.c.emit(
+                            self.createString("{s} = sub {s} 0, {s}", .{ result, codegen.llvmType(exp.t.?.*), exp.rValue.? }),
+                            self.c.lastBlockIndex(),
+                        );
+                    } else if (!exp.t.?.isSigned()) {
+                        var t = if (exp.t.?.equals(types.Type{ .simple = types.SimpleType.U8 }))
+                            types.SimpleType.create(self.alloc, types.SimpleType.I16)
+                        else if (exp.t.?.equals(types.Type{ .simple = types.SimpleType.U16 }))
+                            types.SimpleType.create(self.alloc, types.SimpleType.I32)
+                        else
+                            types.SimpleType.create(self.alloc, types.SimpleType.I64);
+
+                        var tmp = self.c.genLLVMNameEmpty();
+                        defer self.alloc.free(tmp);
+
+                        self.c.emit(
+                            self.createString("{s} = zext {s} {s} to {s}", .{
+                                tmp,
+                                codegen.llvmType(exp.t.?.*),
+                                exp.rValue.?,
+                                codegen.llvmType(t.*),
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        self.c.emit(
+                            self.createString("{s} = sub {s} 0, {s}", .{ result, codegen.llvmType(t.*), tmp }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        exp.t.?.destroy(self.alloc);
+                        exp.t = t;
+
+                        exp.destroyRValue(self.alloc);
+                        exp.rValue = self.createString("{s}", .{result});
+                    } else unreachable;
                 }
-                // exp.rValue = ...
-                exp.hasLValue = false;
+
+                exp.destroyLValue(self.alloc);
+
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
                 return exp;
@@ -1887,15 +2032,22 @@ pub const Parser = struct {
                     // but MUST be in the expression itself.
                     // exp.t.constant.int = ~exp.t.constant.int;
                 } else {
-                    // TODO: Emit IR depending on the operation and expression type.
-                    // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
-                    // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
-                    // since there is no i128.
+                    var result = self.c.genLLVMNameEmpty();
+                    self.c.emit(
+                        self.createString("{s} = xor {s} {s}, -1", .{
+                            result,
+                            codegen.llvmType(exp.t.?.*),
+                            exp.rValue.?,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = result;
                 }
 
-                // exp.rValue = ...
+                exp.destroyLValue(self.alloc);
 
-                exp.hasLValue = false;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
                 return exp;
@@ -1919,8 +2071,9 @@ pub const Parser = struct {
             return SyntaxError.TypeError;
         }
 
-        var result: []const u8 = "";
-        _ = result;
+        var result: ?[]const u8 = null;
+        defer if (result) |res| self.alloc.free(res);
+
         while (tt.isHigherPrioArithmetic(self.s.peek().tokenType)) {
             var op = self.s.next();
             var yExp = try self.parseArrayIndexingAndPrefixExpressions();
@@ -1954,7 +2107,7 @@ pub const Parser = struct {
                 //     else => unreachable,
                 // };
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
@@ -1962,9 +2115,9 @@ pub const Parser = struct {
                     }
                     return SyntaxError.TypeError;
                 };
-                _ = valX;
+                defer self.alloc.free(valX);
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                     switch (err) {
                         ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
@@ -1972,12 +2125,36 @@ pub const Parser = struct {
                     }
                     return SyntaxError.TypeError;
                 };
-                _ = valY;
+                defer self.alloc.free(valY);
 
                 // TODO: Emit IR depending on the operation and expression type.
                 // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
                 // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
                 // since there is no i128.
+                if (result) |res| self.alloc.free(res);
+                result = self.c.genLLVMNameEmpty();
+
+                const opPrefix = if (!t.isDouble() and !t.isFloat()) if (t.isSigned()) "s" else "u" else "";
+                const llvmType = codegen.llvmType(t.*);
+                const llvmOp = if (t.isFloat() or t.isDouble())
+                    codegen.llvmFloatOp(op.tokenType)
+                else
+                    codegen.llvmIntOp(op.tokenType);
+
+                self.c.emit(
+                    self.createString("{s} = {s}{s} {s} {s}, {s}", .{
+                        result.?,
+                        opPrefix,
+                        llvmOp,
+                        llvmType,
+                        valX,
+                        valY,
+                    }),
+                    self.c.lastBlockIndex(),
+                );
+
+                xExp.destroyRValue(self.alloc);
+                xExp.rValue = self.createString("{s}", .{result.?});
             }
 
             // Replace the type of the expression with the new supertype.
@@ -1986,8 +2163,8 @@ pub const Parser = struct {
             xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
-        // TODO: xExp.rValue = ...
-        xExp.hasLValue = false;
+        xExp.destroyLValue(self.alloc);
+
         xExp.semiMustFollow = true;
         xExp.endsWithReturn = false;
         return xExp;
@@ -1997,6 +2174,9 @@ pub const Parser = struct {
     fn parseArrayIndexingAndPrefixExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseI();
         errdefer exp.destroy(self.alloc);
+
+        var result = self.c.genLLVMNameEmpty();
+        defer self.alloc.free(result);
 
         var tok = self.s.peek();
         while (true) {
@@ -2009,7 +2189,7 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
-                    const valX = self.convert(exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue, self.c.lastBlockIndex()) catch {
+                    const valX = self.convert(exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch {
                         self.report(
                             tok,
                             reporter.Level.ERROR,
@@ -2020,14 +2200,29 @@ pub const Parser = struct {
                         );
                         return SyntaxError.TypeError;
                     };
-                    _ = valX;
+                    defer self.alloc.free(valX);
 
                     if (!exp.lt.?.isIntegral()) {
                         self.report(tok, reporter.Level.ERROR, "value of type '{s}' cannot be incremented or decremented", .{exp.t.?.str()}, true, true);
                         return SyntaxError.TypeError;
                     }
 
-                    // TODO: Emit IR.
+                    const llvmType = codegen.llvmType(exp.lt.?.*);
+                    const llvmOp = if (exp.lt.?.isDouble() or exp.lt.?.isFloat()) "fadd" else "add";
+                    const llvmInc = if (tok.tokenType == tt.DEC)
+                        (if (exp.lt.?.isDouble() or exp.lt.?.isFloat()) "-1.0" else "-1")
+                    else
+                        (if (exp.lt.?.isDouble() or exp.lt.?.isFloat()) "1.0" else "1");
+
+                    self.c.emit(
+                        self.createString("{s} = {s} {s} {s} {s}", .{ result, llvmOp, llvmType, valX, llvmInc }),
+                        self.c.lastBlockIndex(),
+                    );
+                    self.c.emit(
+                        self.createString("store {s} {s}, ptr {s}", .{ llvmType, result, exp.lValue.? }),
+                        self.c.lastBlockIndex(),
+                    );
+
                     exp.semiMustFollow = true;
                     exp.hasLValue = true;
                     exp.semiMustFollow = true;
@@ -2036,14 +2231,20 @@ pub const Parser = struct {
                 tt.HASH => {
                     self.consume(tt.HASH) catch unreachable;
                     if (!exp.hasLValue) {
-                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be dereferenced", .{}, true, true);
+                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be referenced", .{}, true, true);
                         return SyntaxError.TypeError;
                     }
 
-                    exp.t = types.Array.create(self.alloc, 0, exp.t.?);
-                    // TODO: What about exp.lt here?
-                    exp.rValue = exp.lValue;
-                    exp.hasLValue = false;
+                    var t = types.Array.create(self.alloc, 0, exp.t.?);
+                    exp.t.?.destroy(self.alloc);
+                    exp.t = t;
+
+                    // TODO: Is exp.rValue set correctly?
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = self.createString("{s}", .{exp.lValue.?});
+
+                    exp.destroyLValue(self.alloc);
+
                     exp.semiMustFollow = true;
                     exp.endsWithReturn = false;
                 },
@@ -2067,17 +2268,21 @@ pub const Parser = struct {
                             exp.t.?.destroy(self.alloc);
                             break :blk ofType;
                         };
-                        // TODO: exp.rValue = ...
                         exp.hasLValue = true;
-                        exp.lValue = exp.rValue;
+                        if (exp.lValue) |lv| self.alloc.free(lv);
+                        exp.lValue = self.createString("{s}", .{exp.rValue.?});
+                        // TODO: exp.rValue = name of the load instruction.
+
                         exp.semiMustFollow = true;
                         exp.endsWithReturn = false;
-
                         continue;
                     }
 
                     var indexes = std.ArrayList([]const u8).init(self.alloc);
-                    defer indexes.deinit();
+                    defer {
+                        for (indexes.items) |i| self.alloc.free(i);
+                        indexes.deinit();
+                    }
 
                     var next = self.s.peek();
                     while (next.tokenType != tt.RBRACK) {
@@ -2085,11 +2290,11 @@ pub const Parser = struct {
                         defer iExp.destroy(self.alloc);
 
                         if (iExp.t.?.equals(types.Type{ .simple = types.SimpleType.I64 }) or iExp.t.?.equals(types.Type{ .simple = types.SimpleType.U64 })) {
-                            indexes.append(iExp.rValue) catch unreachable;
+                            indexes.append(self.createString("{s}", .{iExp.rValue.?})) catch unreachable;
                         } else {
                             const t = types.SimpleType.create(self.alloc, types.SimpleType.I64);
                             defer t.destroy(self.alloc);
-                            const value = self.convert(iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue, self.c.lastBlockIndex()) catch {
+                            const value = self.convert(iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue.?, self.c.lastBlockIndex()) catch {
                                 self.report(
                                     tok,
                                     reporter.Level.ERROR,
@@ -2129,14 +2334,63 @@ pub const Parser = struct {
                         exp.destroy(self.alloc);
                         exp.t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT);
                         exp.lt = exp.t.?.clone(self.alloc);
-                        exp.lValue = "null"; // TODO: Is this correct?
+
+                        exp.setLValue(self.alloc, self.createString("TODO1", .{}));
+                        exp.destroyLValue(self.alloc);
+
                         exp.hasLValue = true;
                         exp.semiMustFollow = true;
                         exp.endsWithReturn = false;
                         continue;
                     }
 
-                    // TODO: Emit IR with pointer arithmetic.
+                    var where = self.createString("{s}", .{indexes.items[0]});
+                    defer self.alloc.free(where);
+
+                    for (1..exp.t.?.array.dimensions) |i| {
+                        var dimension = self.c.genLLVMNameEmpty();
+                        defer self.alloc.free(dimension);
+
+                        self.c.emit(
+                            self.createString("{s} = getelementptr i64, ptr {s}, i64 {d}", .{
+                                dimension,
+                                exp.rValue.?,
+                                -@as(i128, @intCast(exp.t.?.array.dimensions)) + i,
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        var whereNew = self.c.genLLVMNameEmpty();
+                        var tmp = self.c.genLLVMNameEmpty();
+
+                        defer self.alloc.free(whereNew);
+                        defer self.alloc.free(tmp);
+
+                        self.c.emit(
+                            self.createString("{s} = mul i64 {s}, {s}", .{ tmp, where, dimension }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        self.c.emit(
+                            self.createString("{s} = add i64 {s}, {s}", .{ whereNew, tmp, indexes.items[i] }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        self.alloc.free(where);
+                        where = self.createString("{s}", .{whereNew});
+                    }
+
+                    var wherePtr = self.c.genLLVMNameEmpty();
+                    self.c.emit(
+                        self.createString("{s} = getelementptr {s}, ptr {s}, i64 {s}", .{
+                            wherePtr,
+                            codegen.llvmType(exp.t.?.array.ofType.*),
+                            exp.rValue.?,
+                            where,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
                     exp.lt.?.destroy(self.alloc);
                     exp.lt = exp.t.?.array.ofType.clone(self.alloc);
                     exp.t = blk: {
@@ -2145,8 +2399,11 @@ pub const Parser = struct {
                         break :blk ofType;
                     };
                     // TODO: exp.rValue = ...
+
+                    exp.destroyLValue(self.alloc);
                     exp.hasLValue = true;
-                    // TODO: exp.lValue = ;
+                    exp.lValue = wherePtr;
+
                     exp.semiMustFollow = true;
                     exp.endsWithReturn = false;
                 },
@@ -2186,18 +2443,27 @@ pub const Parser = struct {
                             .t = s.t.clone(self.alloc),
                             .lt = s.t.clone(self.alloc),
                             .hasLValue = true,
-                            .rValue = "",
-                            .lValue = "",
                             .semiMustFollow = true,
                             .endsWithReturn = false,
                         };
                     }
+
+                    var explicitLoad = self.c.genLLVMNameEmpty();
+                    self.c.emit(
+                        self.createString("{s} = load {s}, ptr {s}", .{
+                            explicitLoad,
+                            codegen.llvmType(s.t.*),
+                            s.llvmName,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
                     return Expression{
                         .t = s.t.clone(self.alloc),
                         .lt = s.t.clone(self.alloc),
-                        // .rValue = ...,
                         .hasLValue = true,
-                        // .lValue = ...,
+                        .lValue = self.createString("{s}", .{s.llvmName}),
+                        .rValue = explicitLoad,
                         .semiMustFollow = true,
                         .endsWithReturn = false,
                     };
@@ -2205,27 +2471,24 @@ pub const Parser = struct {
             },
             tt.C_INT => {
                 const int = self.consumeGet(tt.C_INT) catch unreachable;
-                var value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
-                _ = value;
+                const value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
 
                 return Expression{
-                    .t = types.Constant.create(self.alloc, types.ConstantTag.int),
-                    .lt = types.Constant.create(self.alloc, types.ConstantTag.int),
-                    .rValue = int.symbol,
+                    .t = types.Constant.create(self.alloc, types.ConstantTag.int, value, 0.0),
+                    .lt = types.Constant.create(self.alloc, types.ConstantTag.int, value, 0.0),
+                    .rValue = self.createString("{s}", .{int.symbol}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
                 };
             },
             tt.C_FLOAT => {
-                const int = self.consumeGet(tt.C_INT) catch unreachable;
-                var value = std.fmt.parseFloat(f64, int.symbol) catch unreachable;
-                _ = value;
+                const int = self.consumeGet(tt.C_FLOAT) catch unreachable;
 
                 return Expression{
-                    .t = types.Constant.create(self.alloc, types.ConstantTag.float),
-                    .lt = types.Constant.create(self.alloc, types.ConstantTag.float),
-                    .rValue = int.symbol,
+                    .t = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
+                    .lt = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
+                    .rValue = self.createString("{s}", .{int.symbol}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2249,8 +2512,8 @@ pub const Parser = struct {
 
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
-                    .lt = types.Constant.create(self.alloc, types.ConstantTag.bool),
-                    .rValue = value,
+                    .lt = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
+                    .rValue = self.createString("{s}", .{value}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2265,11 +2528,10 @@ pub const Parser = struct {
                     var newT = try self.parseType();
                     defer newT.destroy(self.alloc);
 
-                    // TODO: Figure out arrays (starts on line 1892).
                     var cExp = try self.parseI();
                     errdefer cExp.destroy(self.alloc);
 
-                    const valY = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
+                    const result = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, cExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                         // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
                         switch (err) {
                             ConvErr.Overflow => self.report(at, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ cExp.t.?.str(), newT.str() }, true, true),
@@ -2277,24 +2539,27 @@ pub const Parser = struct {
                         }
                         return SyntaxError.TypeError;
                     };
-                    _ = valY;
 
                     cExp.t.?.destroy(self.alloc);
                     cExp.t = newT.clone(self.alloc);
-                    cExp.hasLValue = false;
-                    // TODO: cExp.rValue = ...
+
+                    cExp.destroyLValue(self.alloc);
+
+                    cExp.destroyRValue(self.alloc);
+                    cExp.rValue = result;
+
                     cExp.semiMustFollow = true;
                     cExp.endsWithReturn = false;
                     return cExp;
                 }
                 // We're dealing with builtin functions.
-                const ident = try self.consume(tt.IDENT);
+                const ident = try self.consumeGet(tt.IDENT);
                 _ = ident;
                 // TODO: Emit IR for calling builtin functions.
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                     .hasLValue = false,
-                    .rValue = "TODO: Name of the instruction",
+                    .rValue = self.createString("TODO: Name of the instruction", .{}),
                     .semiMustFollow = true,
                     .endsWithReturn = false,
                     .callsFunction = true,
@@ -2309,7 +2574,7 @@ pub const Parser = struct {
 
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.U8),
-                    .rValue = char.symbol,
+                    .rValue = self.createString("{s}", .{char.symbol}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2362,7 +2627,7 @@ pub const Parser = struct {
         return Expression{
             .t = funcSymbol.t.func.retT.clone(self.alloc),
             .lt = funcSymbol.t.func.retT.clone(self.alloc),
-            .rValue = "TODO: name of a call instruction",
+            .rValue = self.createString("TODO: name of a call instruction", .{}),
             .hasLValue = false,
             .semiMustFollow = true,
             .endsWithReturn = false,
@@ -2416,7 +2681,7 @@ pub const Parser = struct {
         blockIndex: usize,
     ) ConvErr![]const u8 {
         if (from.equals(to.*)) {
-            return what;
+            return self.createString("{s}", .{what});
         }
 
         if (from.isUnit()) {
@@ -2535,7 +2800,7 @@ pub const Parser = struct {
 
         if (from.isArray() or from.isPointer()) {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
-            if (to.isArray()) return what;
+            if (to.isArray()) return self.createString("{s}", .{what});
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = icmp ne ptr {s}, null ", .{ result, what }) catch unreachable,
@@ -2574,8 +2839,8 @@ pub const Parser = struct {
             self.alloc.free(result);
             if (to.isNumeric()) {
                 // TODO: Check bounds and return null if it does not fit.
-                if (true) {
-                    return "CONSTANT";
+                if (types.checkBounds(to.simple, from.constant.intVal)) {
+                    return self.createString("{d}", .{from.constant.intVal});
                 }
                 return ConvErr.Overflow;
             }
@@ -2691,7 +2956,7 @@ pub const Parser = struct {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
             if (to.isNumeric()) {
                 // `to` is numeric and has the same bit width as from.
-                return what;
+                return self.createString("{s}", .{what});
             }
 
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
@@ -3082,7 +3347,7 @@ pub const Parser = struct {
     ) []const u8 {
         var result = self.c.genLLVMNameEmpty();
 
-        var llvmOp = codegen.llvmOp(lhs.lt.?.*, op);
+        var llvmOp = codegen.llvmAssignOp(lhs.lt.?.*, op);
         var llvmT = codegen.llvmType(lhs.lt.?.*);
 
         self.c.emit(
@@ -3090,17 +3355,55 @@ pub const Parser = struct {
                 result,
                 llvmOp,
                 llvmT,
-                rhs.rValue,
+                rhs.rValue.?,
                 converted,
             }) catch unreachable,
             self.c.lastBlockIndex(),
         );
 
         self.c.emit(
-            std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmT, result, lhs.lValue }) catch unreachable,
+            std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmT, result, lhs.lValue.? }) catch unreachable,
             self.c.lastBlockIndex(),
         );
 
         return result;
+    }
+
+    fn evalConstant(
+        self: *Parser,
+        op: token.TokenType,
+        lhs: []const u8,
+        rhs: []const u8,
+    ) []const u8 {
+        const lhsInt = std.fmt.parseInt(i128, lhs, 0) catch unreachable;
+        const rhsInt = std.fmt.parseInt(i128, rhs, 0) catch unreachable;
+
+        return switch (op) {
+            tt.EQL => if (lhsInt == rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            tt.LT => if (lhsInt < rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            tt.GT => if (lhsInt > rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            tt.NEQ => if (lhsInt != rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            tt.LEQ => if (lhsInt <= rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            tt.GEQ => if (lhsInt >= rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
+            else => unreachable,
+        };
+
+        // t.constant.int = switch (op.tokenType) {
+        //     tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
+        //     tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
+        //     // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
+        //     // compiler error: error: expected type 'u7', found 'i128'
+        //     // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
+        //     // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
+        //     tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
+        //     tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
+        //     tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
+        //     else => unreachable,
+
+    }
+
+    fn createString(self: *Parser, comptime fmt: []const u8, args: anytype) []const u8 {
+        // TODO: Use this function during emitting to simplify the code.
+        return std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
     }
 };

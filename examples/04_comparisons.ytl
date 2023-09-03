@@ -1,0 +1,28 @@
+
+i32 main() {
+    // Comparisons of constants.
+    bool a = 123 < 12;
+    bool b = 13 > 0;
+    // Comparisons can be chained:
+    bool c = 10 < 12 < 13;
+
+    // Comparisons of floats.
+    float d = 420.0;
+    float e = 420.1;
+    bool f = d < e;
+
+    // Comparisons of u8s.
+    u8 g = 12;
+    u8 h = 15;
+    bool i = g <= h;
+    bool j = g == h;
+    bool k = g != h;
+
+    // Arrays and pointers can be compared only by equality and non-equality.
+    [-]u8 l;
+    [-][-,-]i32 m;
+    // bool o = l == m;
+    // bool p = l != m;
+
+    return @i32(12);
+}

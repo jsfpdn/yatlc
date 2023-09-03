@@ -151,12 +151,18 @@ pub const ConstantTag = enum(u8) {
     bool,
 };
 
-pub const Constant = union {
+pub const Constant = struct {
     ct: ConstantTag,
+    intVal: i128 = 0,
+    floatVal: f128 = 0,
 
-    pub fn create(alloc: std.mem.Allocator, ct: ConstantTag) *Type {
+    pub fn create(alloc: std.mem.Allocator, ct: ConstantTag, intVal: i128, floatVal: f128) *Type {
         var t = alloc.create(Type) catch unreachable;
-        t.* = Type{ .constant = Constant{ .ct = ct } };
+        t.* = Type{ .constant = Constant{
+            .ct = ct,
+            .intVal = intVal,
+            .floatVal = floatVal,
+        } };
         return t;
     }
 };
@@ -260,7 +266,7 @@ pub const Type = union(TypeTag) {
     pub fn isBool(self: Type) bool {
         return switch (self) {
             TypeTag.simple => |st| st == SimpleType.BOOL,
-            TypeTag.constant => false,
+            TypeTag.constant => |c| c.ct == ConstantTag.bool,
             else => false,
         };
     }
@@ -353,6 +359,20 @@ pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type
         SimpleType.U32 => SimpleType.create(alloc, SimpleType.I64),
         SimpleType.U16 => SimpleType.create(alloc, SimpleType.I64),
         SimpleType.U8 => SimpleType.create(alloc, SimpleType.I64),
+        else => unreachable,
+    };
+}
+
+pub fn checkBounds(t: SimpleType, n: i128) bool {
+    return switch (t) {
+        SimpleType.I8 => -128 <= n and n <= 127,
+        SimpleType.I16 => -32768 <= n and n <= 32767,
+        SimpleType.I32 => -2147483648 <= n and n <= 2147483647,
+        SimpleType.I64 => -9223372036854775808 <= n and n <= 9223372036854775807,
+        SimpleType.U8 => 0 <= n and n <= 255,
+        SimpleType.U16 => 0 <= n and n <= 65535,
+        SimpleType.U32 => 0 <= n and n <= 4294967295,
+        SimpleType.U64 => 0 <= n and n <= 18446744073709551615,
         else => unreachable,
     };
 }

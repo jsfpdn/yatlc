@@ -179,7 +179,7 @@ pub fn llvmType(t: types.Type) []const u8 {
     };
 }
 
-pub fn llvmOp(t: types.Type, op: tokens.TokenType) []const u8 {
+pub fn llvmAssignOp(t: types.Type, op: tokens.TokenType) []const u8 {
     switch (op) {
         tt.LSH_ASSIGN => return "shl",
         tt.RSH_ASSIGN => return if (t.isSigned()) "ashr" else "lshr",
@@ -206,6 +206,47 @@ pub fn llvmOp(t: types.Type, op: tokens.TokenType) []const u8 {
         tt.MUL_ASSIGN => "mul",
         tt.QUO_ASSIGN => if (t.isSigned()) "sdiv" else "udiv",
         tt.REM_ASSIGN => if (t.isSigned()) "srem" else "urem",
+        else => unreachable,
+    };
+}
+
+pub fn llvmFloatOp(op: tokens.TokenType) []const u8 {
+    return switch (op) {
+        tt.EQL => "oeq",
+        tt.NEQ => "one",
+        tt.GT => "ogt",
+        tt.LT => "olt",
+        tt.GEQ => "oge",
+        tt.LEQ => "ole",
+
+        tt.ADD => "fadd",
+        tt.SUB => "fsub",
+        tt.MUL => "fmul",
+        tt.QUO => "fdiv",
+        tt.REM => "frem",
+        else => unreachable,
+    };
+}
+
+pub fn llvmIntOp(op: tokens.TokenType) []const u8 {
+    return switch (op) {
+        tt.EQL => "eq",
+        tt.NEQ => "ne",
+        tt.GT => "gt",
+        tt.LT => "lt",
+        tt.GEQ => "ge",
+        tt.LEQ => "le",
+
+        tt.ADD => "add",
+        tt.SUB => "sub",
+        tt.B_RSH => "shr",
+        tt.B_LSH => "shl",
+        tt.B_AND => "and",
+        tt.B_XOR => "xor",
+        tt.B_OR => "or",
+        tt.MUL => "mul",
+        tt.QUO => "div",
+        tt.REM => "rem",
         else => unreachable,
     };
 }

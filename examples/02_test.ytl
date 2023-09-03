@@ -1,0 +1,18 @@
+i64 main(i32 a, i32 b) {
+    i32 c = 0;
+    c = 10;
+
+    while (true) {
+        c += b;
+
+        break;
+    }
+
+    for (i32 i = 0, i < 10, i++) {
+        i32 a = 10;
+    }
+
+    c = true ? 20 : 30;
+
+    return @i64(a + b);
+}
