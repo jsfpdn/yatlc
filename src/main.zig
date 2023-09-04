@@ -59,9 +59,16 @@ pub fn main() !u8 {
 
     var opts = options{
         .executable = std.fmt.allocPrint(allocator, "a.out", .{}) catch unreachable,
-        .clangPath = if (std.os.getenv(CLANG_ENV)) |path| path else "clang",
+        .clangPath = std.process.getEnvVarOwned(allocator, CLANG_ENV) catch |err| switch (err) {
+            std.process.GetEnvVarOwnedError.EnvironmentVariableNotFound => std.fmt.allocPrint(allocator, "clang", .{}) catch unreachable,
+            else => unreachable,
+        },
     };
-    defer allocator.free(opts.executable);
+
+    defer {
+        allocator.free(opts.executable);
+        allocator.free(opts.clangPath);
+    }
 
     for (args[1..]) |arg| {
         if (argSet(arg, "-h", "--help")) {
