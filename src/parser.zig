@@ -243,7 +243,8 @@ pub const Parser = struct {
                         }
 
                         var llvmType = codegen.llvmType(arg.t.*);
-                        var paramAlloc = arg.llvmName;
+                        var paramAlloc = self.c.genLLVMNameEmpty();
+                        defer self.alloc.free(paramAlloc);
 
                         self.c.emitInit(std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{ paramAlloc, llvmType }) catch unreachable);
                         self.c.emitInit(std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmType, arg.llvmName, paramAlloc }) catch unreachable);

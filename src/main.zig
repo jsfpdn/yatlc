@@ -12,26 +12,33 @@ const reporter = @import("reporter.zig");
 const scanner = @import("scanner.zig");
 
 const MAX_BYTES: usize = 1024 * 1024;
+const CLANG_ENV = "YATLC_CLANG_PATH";
 
-const description = "yatlc is a yet-another-toy-language compiler.";
+const description = "yatlc is a yet-another-toy-language compiler.\n";
 const usage =
     \\Usage: yatlc [file] [option ...]
     \\
     \\General options:
     \\-h, --help            Show this help message
-    \\-v, --verbose         Print debug information during compilation
+    \\-l, --emitllvmir      Emit LLVM IR to a .ll file
+    \\-o                    Name of the compiled executable. Defaults to a.out
     \\-t, --emittokens      Emit tokens from lexical analysis to a .t file
+    \\-v, --verbose         Print debug information during compilation
+    \\
+    \\Path to clang compiler can be set via the environment variable YATLC_CLANG_PATH.
+    \\Defaults just to `clang`.
     \\
 ;
 
 pub const options = struct {
     verbose: bool = false,
     emitTokens: bool = false,
-
-    // TODO(jsfpdn): custom pub fmt function to print options when verbose?
+    emitLLVMIR: bool = false,
+    clangPath: []const u8 = "clang",
+    executable: []const u8,
 };
 
-pub fn main() !void {
+pub fn main() !u8 {
     var gpa = std.heap.GeneralPurposeAllocator(.{
         .safety = true,
         .stack_trace_frames = 100,
@@ -50,20 +57,42 @@ pub fn main() !void {
         fatalHelp("received too few arguments", .{});
     }
 
-    var opts = options{};
+    var opts = options{
+        .executable = std.fmt.allocPrint(allocator, "a.out", .{}) catch unreachable,
+        .clangPath = if (std.os.getenv(CLANG_ENV)) |path| path else "clang",
+    };
+    defer allocator.free(opts.executable);
+
     for (args[1..]) |arg| {
         if (argSet(arg, "-h", "--help")) {
-            return io.getStdOut().writeAll(usage);
+            io.getStdOut().writeAll(description) catch unreachable;
+            io.getStdOut().writeAll(usage) catch unreachable;
+            return 0;
         }
     }
 
-    for (args[2..]) |arg| {
+    var i: usize = 2;
+    while (i < args.len) {
+        var arg = args[i];
+        i += 1;
+
         if (argSet(arg, "-h", "--help")) {
-            return io.getStdOut().writeAll(usage);
+            unreachable;
         } else if (argSet(arg, "-v", "--verbose")) {
             opts.verbose = true;
+        } else if (argSet(arg, "-l", "--emitllvmir")) {
+            opts.emitLLVMIR = true;
         } else if (argSet(arg, "-t", "--emittokens")) {
             opts.emitTokens = true;
+        } else if (argSet(arg, "-o", null)) {
+            if (i + 1 > args.len) {
+                fatal("argument to -o is missing", .{});
+            }
+
+            allocator.free(opts.executable);
+            opts.executable = std.fmt.allocPrint(allocator, "{s}", .{args[i]}) catch unreachable;
+
+            i += 1;
         } else {
             fatal("unrecognized option {s}", .{arg});
         }
@@ -83,9 +112,14 @@ pub fn main() !void {
     const contents = try reader.readAllAlloc(allocator, MAX_BYTES);
     defer allocator.free(contents);
 
+    var basename = opts.executable;
+    if (std.mem.eql(u8, opts.executable, "a.out")) {
+        basename = "a";
+    }
+
     var w: ?std.fs.File.Writer = null;
     if (opts.emitTokens) {
-        const tFile = std.fmt.allocPrint(allocator, "{s}.t", .{filename}) catch |err| {
+        const tFile = std.fmt.allocPrint(allocator, "{s}.t", .{basename}) catch |err| {
             fatal("could not prepare a .t file: {s}", .{@errorName(err)});
         };
         defer allocator.free(tFile);
@@ -95,13 +129,15 @@ pub fn main() !void {
         w = f.writer();
     }
 
-    const llvmFilename = std.fmt.allocPrint(allocator, "{s}.ll", .{filename}) catch |err| {
-        fatal("could not prepare a .t file: {s}", .{@errorName(err)});
+    const llvmFilename = std.fmt.allocPrint(allocator, "{s}.ll", .{basename}) catch |err| {
+        fatal("could not prepare a .ll file: {s}", .{@errorName(err)});
     };
     defer allocator.free(llvmFilename);
     const llvmFile = std.fs.cwd().createFile(llvmFilename, .{ .read = false, .truncate = true }) catch |err| {
-        fatal("could not create a .t file: {s}", .{@errorName(err)});
+        fatal("could not create a .ll file: {s}", .{@errorName(err)});
     };
+
+    defer if (!opts.emitLLVMIR) std.fs.cwd().deleteFile(llvmFilename) catch unreachable;
 
     var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, w);
@@ -111,6 +147,38 @@ pub fn main() !void {
     defer c.deinit();
 
     p.parse(llvmFile.writer()) catch {};
+
+    const argv = &[_][]const u8{ opts.clangPath, "-Woverride-module", llvmFilename, "-o", opts.executable };
+    const result = std.process.Child.exec(.{
+        .allocator = allocator,
+        .argv = argv,
+    }) catch |err| switch (err) {
+        std.os.ExecveError.FileNotFound => fatal("could not find clang at path '{s}'", .{opts.clangPath}),
+        else => return err,
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    switch (result.term) {
+        .Signal => |signal| fatal("clang ended by signal {d}", .{signal}),
+        .Unknown => |unknown| fatal("clang returned with unknown value {d}", .{unknown}),
+        .Stopped => fatal("clang stopped", .{}),
+        else => {},
+    }
+
+    if (!std.mem.eql(u8, result.stderr, "")) {
+        io.getStdOut().writeAll("clang error:\n") catch unreachable;
+        io.getStdOut().writeAll(result.stderr) catch unreachable;
+        return 1;
+    }
+    if (!std.mem.eql(u8, result.stdout, "")) {
+        io.getStdOut().writeAll("clang output:\n") catch unreachable;
+        io.getStdOut().writeAll(result.stdout) catch unreachable;
+    }
+
+    return 0;
 }
 
 pub fn fatal(comptime format: []const u8, args: anytype) noreturn {
@@ -124,6 +192,10 @@ pub fn fatalHelp(comptime format: []const u8, args: anytype) noreturn {
     process.exit(1);
 }
 
-pub fn argSet(arg: []const u8, short: []const u8, long: []const u8) bool {
-    return mem.eql(u8, arg, short) or mem.eql(u8, arg, long);
+pub fn argSet(arg: []const u8, short: []const u8, long: ?[]const u8) bool {
+    if (mem.eql(u8, arg, short)) return true;
+
+    if (long) |l| return mem.eql(u8, arg, l);
+
+    return false;
 }
