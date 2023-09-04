@@ -2593,8 +2593,18 @@ pub const Parser = struct {
                     return cExp;
                 }
                 // We're dealing with builtin functions.
-                const ident = try self.consumeGet(tt.IDENT);
-                _ = ident;
+                const n = self.s.next();
+                if (n.tokenType == tt.PRINT) {
+                    try self.consume(tt.LPAREN);
+
+                    var fmt = try self.consumeGet(tt.C_STRING);
+                    // TODO: Think about printing integers.
+
+                    self.c.genPrint(fmt.symbol);
+
+                    try self.consume(tt.RPAREN);
+                }
+
                 // TODO: Emit IR for calling builtin functions.
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),

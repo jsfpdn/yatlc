@@ -10,7 +10,8 @@ const tt = tokens.TokenType;
 pub const CodeGen = struct {
     alloc: std.mem.Allocator,
 
-    triple: []const u8,
+    globals: []const u8,
+
     segments: std.ArrayList([]const u8),
     commandNum: u64 = 0,
 
@@ -21,8 +22,8 @@ pub const CodeGen = struct {
     pub fn init(alloc: std.mem.Allocator) CodeGen {
         var c = CodeGen{
             .alloc = alloc,
-            .triple = "TODO",
             .segments = std.ArrayList([]const u8).init(alloc),
+            .globals = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .waitingBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .currentBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .waits = false,
@@ -36,6 +37,7 @@ pub const CodeGen = struct {
             self.alloc.free(b);
         }
         self.segments.deinit();
+        self.alloc.free(self.globals);
         self.alloc.free(self.waitingBlock);
         self.alloc.free(self.currentBlock);
     }
@@ -120,7 +122,46 @@ pub const CodeGen = struct {
         return llvmName;
     }
 
+    pub fn genPrint(self: *CodeGen, fmt: []const u8) void {
+        var fmtStr = std.fmt.allocPrint(self.alloc, "@.fmt.{d}", .{self.commandNum}) catch unreachable;
+        defer self.alloc.free(fmtStr);
+        self.commandNum += 1;
+
+        // TODO: Handle special characters: terminal zero, newline
+        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ {d} x i8 ] c{s}", .{
+            fmtStr,
+            fmt.len - 2,
+            fmt,
+        }) catch unreachable;
+        defer self.alloc.free(fmtGlobal);
+
+        var n = std.fmt.allocPrint(self.alloc, "{s}{s}\n\n", .{ self.globals, fmtGlobal }) catch unreachable;
+        self.alloc.free(self.globals);
+        self.globals = n;
+
+        var result = self.genLLVMNameEmpty();
+        defer self.alloc.free(result);
+        self.emit(
+            std.fmt.allocPrint(
+                self.alloc,
+                "{s} = call i32 (ptr, ...) @printf(ptr noundef getelementptr ([ {d} x i8 ], [ {d} x i8 ]* {s}, i32 0, i32 0))",
+                .{
+                    result,
+                    fmt.len - 2,
+                    fmt.len - 2,
+                    fmtStr,
+                },
+            ) catch unreachable,
+            self.lastBlockIndex(),
+        );
+
+        self.commandNum += 1;
+    }
+
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
+        _ = try writer.write(self.globals);
+        _ = try writer.write("declare i32 @printf(ptr noundef, ...)\n\n");
+
         for (self.segments.items) |segment| {
             _ = try writer.write(segment);
         }
