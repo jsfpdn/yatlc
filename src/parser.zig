@@ -456,17 +456,35 @@ pub const Parser = struct {
         }
 
         while (!endParseExpression(tok.tokenType)) {
+            var semi = false;
+
             if (tok.tokenType != tt.SEMICOLON) {
                 var exp1 = switch (tok.tokenType) {
                     tt.WHILE => try self.parseWhile(),
                     tt.DO => try self.parseDoWhile(),
                     tt.FOR => try self.parseFor(),
                     tt.IF => try self.parseIf(),
-                    tt.RETURN => try self.parseReturn(),
-                    tt.BREAK => try self.parseBreak(),
-                    tt.CONTINUE => try self.parseContinue(),
+                    tt.RETURN => blk: {
+                        var exp2 = try self.parseReturn();
+                        semi = true;
+                        break :blk exp2;
+                    },
+                    tt.BREAK => blk: {
+                        var exp2 = try self.parseBreak();
+                        semi = true;
+                        break :blk exp2;
+                    },
+                    tt.CONTINUE => blk: {
+                        var exp2 = try self.parseContinue();
+                        semi = true;
+                        break :blk exp2;
+                    },
                     tt.SEMICOLON => unreachable,
-                    else => try self.parseSubExpression(),
+                    else => blk: {
+                        var exp2 = try self.parseSubExpression();
+                        semi = exp2.semiMustFollow;
+                        break :blk exp2;
+                    },
                 };
 
                 if (exp) |e| e.destroy(self.alloc);
@@ -475,12 +493,16 @@ pub const Parser = struct {
 
             tok = self.s.peek();
             if (tok.tokenType == tt.SEMICOLON) {
+                if (!semi) {
+                    self.report(tok, reporter.Level.ERROR, "unexpected ';'", .{}, true, true);
+                    return SyntaxError.TypeError;
+                }
                 try self.consume(tt.SEMICOLON);
                 tok = self.s.peek();
                 continue;
             }
 
-            if (exp.?.semiMustFollow and !endParseExpression(tok.tokenType)) {
+            if (semi and !endParseExpression(tok.tokenType)) {
                 self.report(tok, reporter.Level.ERROR, "expected ';' but got '{s}' instead", .{tok.str()}, true, true);
                 return SyntaxError.TypeError;
             }
@@ -871,7 +893,7 @@ pub const Parser = struct {
 
                 defer self.alloc.free(value);
 
-                if (!self.returnType.?.isUnit()) {
+                if (self.returnType.?.isUnit()) {
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "ret void", .{}) catch unreachable,
                         self.c.lastBlockIndex(),
