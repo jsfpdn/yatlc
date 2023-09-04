@@ -533,12 +533,28 @@ pub const Parser = struct {
 
         try self.consume(tt.RPAREN);
 
+        var thenBlockName = self.c.genLLVMName("then");
+        var elseBlockName = self.c.genLLVMName("else");
+
+        defer self.alloc.free(thenBlockName);
+        defer self.alloc.free(elseBlockName);
+
+        self.c.emit(
+            self.createString("br i1 {s}, label {s}, label {s}", .{ ifExp.rValue.?, thenBlockName, elseBlockName }),
+            self.c.lastBlockIndex(),
+        );
+
+        self.c.emitBlock(thenBlockName);
+
         var body = try self.parseBody();
         defer body.destroy(self.alloc);
 
         var callsFunction = body.callsFunction or ifExp.callsFunction;
 
         if (self.s.peek().tokenType != tt.ELSE) {
+            self.c.emit(self.createString("br label {s}", .{elseBlockName}), self.c.lastBlockIndex());
+            self.c.emitBlock(elseBlockName);
+
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .endsWithReturn = false,
@@ -551,7 +567,14 @@ pub const Parser = struct {
         var b = body.endsWithReturn;
         var c = false;
 
+        var endBlockName = self.c.genLLVMName("next");
+        defer self.alloc.free(endBlockName);
+
+        if (!b) self.c.emit(self.createString("br label {s}", .{endBlockName}), self.c.lastBlockIndex());
+
         self.consume(tt.ELSE) catch unreachable;
+
+        self.c.emitBlock(elseBlockName);
 
         if (self.s.peek().tokenType == tt.IF) {
             var anotherIfExp = try self.parseIf();
@@ -578,10 +601,9 @@ pub const Parser = struct {
         }
 
         if (!b) {
-            if (!c) {
-                // TODO: Emit IR.
-            }
-            // TODO: Emit IR.
+            if (!c) self.c.emit(self.createString("br label {s}", .{endBlockName}), self.c.lastBlockIndex());
+
+            self.c.emitBlock(endBlockName);
         }
 
         return Expression{
@@ -1267,7 +1289,7 @@ pub const Parser = struct {
                 );
 
                 var jumpFromThen = std.fmt.allocPrint(self.alloc, "{s}", .{self.c.currentBlock}) catch unreachable;
-                self.alloc.free(jumpFromThen);
+                defer self.alloc.free(jumpFromThen);
 
                 try self.consume(tt.COLON);
 
@@ -1285,7 +1307,7 @@ pub const Parser = struct {
                 );
 
                 var jumpFromElse = std.fmt.allocPrint(self.alloc, "{s}", .{self.c.currentBlock}) catch unreachable;
-                self.alloc.free(jumpFromElse);
+                defer self.alloc.free(jumpFromElse);
 
                 self.c.emitBlock(nextBlockName);
 
