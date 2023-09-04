@@ -1113,7 +1113,7 @@ pub const Parser = struct {
                 };
                 defer self.alloc.free(value);
 
-                var rvalue = self.emitOpAssign(assignTok.tokenType, exp, rhsExp, value);
+                var rvalue = self.emitOpAssign(assignTok.tokenType, exp, value);
 
                 exp.semiMustFollow = true;
 
@@ -2231,7 +2231,7 @@ pub const Parser = struct {
                         (if (exp.lt.?.isDouble() or exp.lt.?.isFloat()) "1.0" else "1");
 
                     self.c.emit(
-                        self.createString("{s} = {s} {s} {s} {s}", .{ result, llvmOp, llvmType, valX, llvmInc }),
+                        self.createString("{s} = {s} {s} {s}, {s}", .{ result, llvmOp, llvmType, valX, llvmInc }),
                         self.c.lastBlockIndex(),
                     );
                     self.c.emit(
@@ -3393,28 +3393,27 @@ pub const Parser = struct {
     fn emitOpAssign(
         self: *Parser,
         op: tt,
-        lhs: Expression,
-        rhs: Expression,
+        exp: Expression,
         converted: []const u8,
     ) []const u8 {
         var result = self.c.genLLVMNameEmpty();
 
-        var llvmOp = codegen.llvmAssignOp(lhs.lt.?.*, op);
-        var llvmT = codegen.llvmType(lhs.lt.?.*);
+        var llvmOp = codegen.llvmAssignOp(exp.lt.?.*, op);
+        var llvmT = codegen.llvmType(exp.lt.?.*);
 
         self.c.emit(
             std.fmt.allocPrint(self.alloc, "{s} = {s} {s} {s}, {s}", .{
                 result,
                 llvmOp,
                 llvmT,
-                rhs.rValue.?,
+                exp.rValue.?,
                 converted,
             }) catch unreachable,
             self.c.lastBlockIndex(),
         );
 
         self.c.emit(
-            std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmT, result, lhs.lValue.? }) catch unreachable,
+            std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmT, result, exp.lValue.? }) catch unreachable,
             self.c.lastBlockIndex(),
         );
 
