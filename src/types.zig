@@ -95,17 +95,27 @@ pub const SimpleType = enum(u8) {
 };
 
 pub const Array = struct {
+    alloc: std.mem.Allocator,
+
     dimensions: usize = 0,
     ofType: *Type = undefined,
 
     pub fn create(alloc: std.mem.Allocator, dimensions: usize, ofType: *Type) *Type {
         var t = alloc.create(Type) catch unreachable;
-        t.* = Type{ .array = Array{ .dimensions = dimensions, .ofType = ofType } };
+        t.* = Type{ .array = Array{ .alloc = alloc, .dimensions = dimensions, .ofType = ofType } };
         return t;
     }
 
-    fn destroy(self: *Array, alloc: std.mem.Allocator) void {
-        self.*.ofType.destroy(alloc);
+    fn destroy(self: *Array) void {
+        self.*.ofType.destroy(self.alloc);
+    }
+
+    fn str(self: Array) []const u8 {
+        // TODO: Format the string representation of array as `[-,-,-]<type>`.
+        // This means that self.str() creates dynamically allocated string
+        // therefore every call to self.str() must deallocate the string.
+        _ = self;
+        return "array";
     }
 };
 
@@ -145,24 +155,13 @@ pub const Func = struct {
         }
     }
 };
-pub const ConstantTag = enum(u8) {
-    int,
-    float,
-    bool,
-};
 
 pub const Constant = struct {
-    ct: ConstantTag,
-    intVal: i128 = 0,
-    floatVal: f128 = 0,
+    value: i128 = 0,
 
-    pub fn create(alloc: std.mem.Allocator, ct: ConstantTag, intVal: i128, floatVal: f128) *Type {
+    pub fn create(alloc: std.mem.Allocator, value: i128) *Type {
         var t = alloc.create(Type) catch unreachable;
-        t.* = Type{ .constant = Constant{
-            .ct = ct,
-            .intVal = intVal,
-            .floatVal = floatVal,
-        } };
+        t.* = Type{ .constant = Constant{ .value = value } };
         return t;
     }
 };
@@ -182,7 +181,7 @@ pub const Type = union(TypeTag) {
 
     pub fn destroy(self: *Type, alloc: std.mem.Allocator) void {
         switch (self.*) {
-            TypeTag.array => |*array| array.destroy(alloc),
+            TypeTag.array => |*array| array.destroy(),
             TypeTag.func => |*func| func.destroy(alloc),
             else => {},
         }
@@ -193,8 +192,12 @@ pub const Type = union(TypeTag) {
         var t = alloc.create(Type) catch unreachable;
         t.* = switch (self.*) {
             TypeTag.simple => |simple| Type{ .simple = simple },
-            TypeTag.constant => |constant| Type{ .constant = Constant{ .ct = constant.ct } },
-            TypeTag.array => |array| Type{ .array = Array{ .dimensions = array.dimensions, .ofType = array.ofType.clone(alloc) } },
+            TypeTag.constant => |constant| Type{ .constant = Constant{ .value = constant.value } },
+            TypeTag.array => |array| Type{ .array = Array{
+                .alloc = array.alloc,
+                .dimensions = array.dimensions,
+                .ofType = array.ofType.clone(alloc),
+            } },
             TypeTag.func => |func| blk: {
                 var newFunc = Func{
                     .retT = func.retT.clone(alloc),
@@ -214,7 +217,7 @@ pub const Type = union(TypeTag) {
 
         return switch (self) {
             TypeTag.simple => |simple| simple == other.simple,
-            TypeTag.constant => |constant| constant.ct == other.constant.ct,
+            TypeTag.constant => true,
             TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
             TypeTag.func => |func| blk: {
                 if (func.args.items.len != other.func.args.items.len or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
@@ -266,7 +269,6 @@ pub const Type = union(TypeTag) {
     pub fn isBool(self: Type) bool {
         return switch (self) {
             TypeTag.simple => |st| st == SimpleType.BOOL,
-            TypeTag.constant => |c| c.ct == ConstantTag.bool,
             else => false,
         };
     }
@@ -311,7 +313,7 @@ pub const Type = union(TypeTag) {
     pub fn str(self: Type) []const u8 {
         return switch (self) {
             TypeTag.simple => |st| st.str(),
-            TypeTag.array => "array",
+            TypeTag.array => |a| a.str(),
             TypeTag.func => "function",
             TypeTag.constant => "constant",
         };
@@ -375,4 +377,20 @@ pub fn checkBounds(t: SimpleType, n: i128) bool {
         SimpleType.U64 => 0 <= n and n <= 18446744073709551615,
         else => unreachable,
     };
+}
+
+pub fn minimumSignedType(alloc: std.mem.Allocator, n: i128) *Type {
+    if (-128 <= n and n <= 127)
+        return SimpleType.create(alloc, SimpleType.I8);
+
+    if (-32768 <= n and n <= 32767)
+        return SimpleType.create(alloc, SimpleType.I16);
+
+    if (-2147483648 <= n and n <= 2147483647)
+        return SimpleType.create(alloc, SimpleType.I32);
+
+    if (-9223372036854775808 <= n and n <= 9223372036854775807)
+        return SimpleType.create(alloc, SimpleType.I64);
+
+    unreachable;
 }

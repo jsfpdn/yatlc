@@ -115,7 +115,7 @@ pub const CodeGen = struct {
     }
 
     pub fn genLLVMNameEmpty(self: *CodeGen) []const u8 {
-        var llvmName = std.fmt.allocPrint(self.alloc, "%{d}", .{self.commandNum}) catch unreachable;
+        var llvmName = std.fmt.allocPrint(self.alloc, "%x{d}", .{self.commandNum}) catch unreachable;
         self.commandNum += 1;
         return llvmName;
     }

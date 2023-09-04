@@ -1,0 +1,20 @@
+
+i32 main() {
+    // Integeres can be converted to booleans only explicitly.
+    bool a = @bool(42);
+    bool b = @bool(0);
+    
+    // Signed integers can be converted to unsigned integers only explicitly.
+    i8 c = -12;
+    u32 d = @u32(c);
+
+
+    // Arrays can be converted to another arrays.
+    [-]u8 array1;
+    [-,-][-,-]i32 array2 = @[-,-][-,-]i32(array1);
+
+    // `result` is implicitly converted to i32 when returning from the function
+    // since there is no overflow or data loss.
+    i8 result = 0;
+    return result;
+}

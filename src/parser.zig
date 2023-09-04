@@ -87,9 +87,7 @@ pub const Parser = struct {
     // * constant folding
     // * IR emitter
     //      * fix potential issue in the convert function w/ memory leak when `result = temp;`
-    //      * type conversions: minimumSignedType and Parser.convert
     //      * handling multiple functions
-    //      * fix return statements
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -289,10 +287,7 @@ pub const Parser = struct {
                     // Close the scope just for the function arguments.
                     self.st.close();
 
-                    self.c.emit(
-                        std.fmt.allocPrint(self.alloc, "}}\n", .{}) catch unreachable,
-                        self.c.lastBlockIndex(),
-                    );
+                    self.c.emitA(std.fmt.allocPrint(self.alloc, "}}\n", .{}) catch unreachable);
                     self.c.waits = false;
 
                     fs.defined = true;
@@ -424,7 +419,7 @@ pub const Parser = struct {
                 return SyntaxError.UnexpectedToken;
             },
             tt.LBRACK => {
-                var array: types.Array = .{};
+                var array: types.Array = .{ .alloc = self.alloc };
                 while (tok.tokenType != tt.RBRACK) {
                     try self.consume(tt.SUB);
                     array.dimensions += 1;
@@ -846,8 +841,8 @@ pub const Parser = struct {
                 defer retExp.destroy(self.alloc);
 
                 const value = self.convert(
-                    self.returnType.?,
                     retExp.t.?,
+                    self.returnType.?,
                     ConvMode.IMPLICIT,
                     retExp.rValue.?,
                     self.c.lastBlockIndex(),
@@ -968,6 +963,8 @@ pub const Parser = struct {
         if (types.startsType(tok.symbol)) {
             // Current token under the cursor is either a simple type or an array type.
             identType = try self.parseType();
+            errdefer identType.?.destroy(self.alloc);
+
             identTok = try self.consumeGet(tt.IDENT);
             defer identType.?.destroy(self.alloc);
 
@@ -1012,7 +1009,7 @@ pub const Parser = struct {
                     var value = self.convert(subExp.t.?, exp.t.?, ConvMode.IMPLICIT, subExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                         switch (err) {
                             ConvErr.Overflow => self.report(
-                                identTok.?,
+                                assignTok,
                                 reporter.Level.ERROR,
                                 "cannot cast value of type {s} to {s} due to possible overflow",
                                 .{ subExp.t.?.str(), exp.t.?.str() },
@@ -1020,7 +1017,7 @@ pub const Parser = struct {
                                 true,
                             ),
                             ConvErr.NoImplicit => self.report(
-                                identTok.?,
+                                assignTok,
                                 reporter.Level.ERROR,
                                 "cannot cast value of type {s} to {s}",
                                 .{ subExp.t.?.str(), exp.t.?.str() },
@@ -1300,8 +1297,9 @@ pub const Parser = struct {
                 }
 
                 if (t.isConstant()) {
-                    // TODO: Implement me:
-                    // var t = minimumSignedType(...);
+                    var newT = types.minimumSignedType(self.alloc, t.constant.value);
+                    t.destroy(self.alloc);
+                    t = newT;
                 }
 
                 if (!t.isUnit()) {
@@ -1959,9 +1957,7 @@ pub const Parser = struct {
                 }
 
                 if (exp.t.?.isConstant()) {
-                    // TODO: The actual value of the constant is not stored in the type anymore
-                    // but MUST be in the expression itself.
-                    // exp.t.constant.int = -exp.t.constant.int;
+                    exp.t.?.constant.value = -exp.t.?.constant.value;
                 } else {
                     var result = self.c.genLLVMNameEmpty();
                     defer self.alloc.free(result);
@@ -2028,9 +2024,7 @@ pub const Parser = struct {
                 }
 
                 if (exp.t.?.isConstant()) {
-                    // TODO: The actual value of the constant is not stored in the type anymore
-                    // but MUST be in the expression itself.
-                    // exp.t.constant.int = ~exp.t.constant.int;
+                    exp.t.?.constant.value = ~exp.t.?.constant.value;
                 } else {
                     var result = self.c.genLLVMNameEmpty();
                     self.c.emit(
@@ -2474,8 +2468,8 @@ pub const Parser = struct {
                 const value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
 
                 return Expression{
-                    .t = types.Constant.create(self.alloc, types.ConstantTag.int, value, 0.0),
-                    .lt = types.Constant.create(self.alloc, types.ConstantTag.int, value, 0.0),
+                    .t = types.Constant.create(self.alloc, value),
+                    .lt = types.Constant.create(self.alloc, value),
                     .rValue = self.createString("{s}", .{int.symbol}),
                     .hasLValue = false,
                     .semiMustFollow = true,
@@ -2537,6 +2531,7 @@ pub const Parser = struct {
                             ConvErr.Overflow => self.report(at, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ cExp.t.?.str(), newT.str() }, true, true),
                             ConvErr.NoImplicit => self.report(at, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ cExp.t.?.str(), newT.str() }, true, true),
                         }
+
                         return SyntaxError.TypeError;
                     };
 
@@ -2800,7 +2795,12 @@ pub const Parser = struct {
 
         if (from.isArray() or from.isPointer()) {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
-            if (to.isArray()) return self.createString("{s}", .{what});
+
+            if (to.isArray()) {
+                self.alloc.free(result);
+                return self.createString("{s}", .{what});
+            }
+
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = icmp ne ptr {s}, null ", .{ result, what }) catch unreachable,
@@ -2835,50 +2835,80 @@ pub const Parser = struct {
         }
 
         if (from.isConstant()) {
-            // TODO: Implement constants.
-            self.alloc.free(result);
             if (to.isNumeric()) {
-                // TODO: Check bounds and return null if it does not fit.
-                if (types.checkBounds(to.simple, from.constant.intVal)) {
-                    return self.createString("{d}", .{from.constant.intVal});
+                if (types.checkBounds(to.simple, from.constant.value)) {
+                    self.alloc.free(result);
+                    return self.createString("{d}", .{from.constant.value});
                 }
                 return ConvErr.Overflow;
             }
 
             if (to.isFloat()) {
-                if (conv != ConvMode.BITCAST) return "constant to float in hexadecimal";
-                return "TODO";
+                // TODO: To hexadecimal?
+                if (conv != ConvMode.BITCAST) {
+                    self.alloc.free(result);
+                    return self.createString("{d}", .{from.constant.value});
+                }
+
+                // TODO: Truncate and cast properly.
+                var tmp: i32 = @truncate(from.constant.value);
+                self.c.emit(
+                    self.createString("{s} = bitcast i32 {d} to float", .{ result, tmp }),
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (to.isDouble()) {
-                if (conv != ConvMode.BITCAST) return "constant to double in hexadecimal";
-                return "TODO";
+                // TODO: To hexadecimal?
+                if (conv != ConvMode.BITCAST) {
+                    self.alloc.free(result);
+                    return self.createString("{d}", .{from.constant.value});
+                }
+
+                // TODO: Truncate and cast properly.
+                var tmp: i64 = @truncate(from.constant.value);
+                self.c.emit(
+                    self.createString("{s} = bitcast i32 {d} to float", .{ result, tmp }),
+                    blockIndex,
+                );
+
+                return result;
             }
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
+
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
-                // FIXME: Condition should be std.mem.eql(u8, from.rvalue, "0")
-                if (false) return "false";
-                return "true";
+                self.alloc.free(result);
+
+                if (from.constant.value == 0) return self.createString("false", .{});
+                return self.createString("true", .{});
             }
 
             if (to.isBool()) {
                 // Conversion must be bitcast.
-                // FIXME: Condition should be parse from.rvalue to int and do the modulo.
-                if (false) return "false";
-                return "true";
+                self.alloc.free(result);
+
+                if (@mod(from.constant.value, 2) == 0) return self.createString("false", .{});
+                return self.createString("true", .{});
             }
 
             if (to.isArray()) {
-                return "TODO";
+                var ptr: u64 = @intCast(from.constant.value);
+                self.c.emit(
+                    self.createString("{s} = inttoptr i64 {d} to ptr", .{ result, ptr }),
+                    blockIndex,
+                );
+
+                return result;
             }
 
             unreachable;
         }
 
         if (!from.isSigned()) {
-            // TODO: Implement width checking.
-            if (false) {
+            if (to.simple.width() > from.simple.width()) {
                 // If `to` has greater bit width than `from`.
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -2914,7 +2944,7 @@ pub const Parser = struct {
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
 
-                if (false) {
+                if (from.simple.width() > t.simple.width()) {
                     // If `from` has greater bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -2925,7 +2955,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (false) {
+                } else if (from.simple.width() < t.simple.width()) {
                     // If `from` has smaller bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -2993,7 +3023,7 @@ pub const Parser = struct {
         }
 
         if (from.isSigned()) {
-            if (false) {
+            if (to.isSigned() and to.simple.width() > from.simple.width()) {
                 // `to` is numeric and has greater bit width than `from`
                 if (conv != ConvMode.BITCAST) {
                     self.c.emit(
@@ -3040,7 +3070,7 @@ pub const Parser = struct {
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
 
-                if (false) {
+                if (from.simple.width() > t.simple.width()) {
                     // `from` has bit width greater than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -3051,7 +3081,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (false) {
+                } else if (from.simple.width() < t.simple.width()) {
                     // `from` has bit width smaller than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3082,7 +3112,7 @@ pub const Parser = struct {
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
 
-            if (to.isNumeric()) {
+            if (to.isNumeric() and to.simple.width() > from.simple.width()) {
                 // `to` is numeric and has greater bit width than `from`.
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3097,7 +3127,7 @@ pub const Parser = struct {
                 return result;
             }
 
-            if (to.isNumeric()) {
+            if (to.isNumeric() and to.simple.width() == from.simple.width()) {
                 // `to` is numeric and has the same bit width as `from`.
                 self.alloc.free(result);
                 return std.fmt.allocPrint(self.alloc, "{s}", .{what}) catch unreachable;
@@ -3268,7 +3298,7 @@ pub const Parser = struct {
                     blockIndex,
                 );
 
-                if (false) {
+                if (to.simple.width() < t.simple.width()) {
                     // `to` has smaller bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -3279,7 +3309,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (false) {
+                } else if (to.simple.width() > t.simple.width()) {
                     // `to` has greater bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
