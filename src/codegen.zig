@@ -272,6 +272,7 @@ pub fn funcCall(
     llvmArgTypes: std.ArrayList([]const u8),
     llvmParamNames: std.ArrayList([]const u8),
 ) []const u8 {
+    defer std.log.err("returning from codegen.funcCall", .{});
     if (llvmArgTypes.items.len != llvmParamNames.items.len) @panic("arg names and their types must match");
 
     var tmp = std.fmt.allocPrint(alloc, "call {s} {s}(", .{ llvmRetType, llvmFuncName }) catch unreachable;

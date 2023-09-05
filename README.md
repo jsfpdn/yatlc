@@ -15,10 +15,9 @@ To build the compiler, run `zig build`, emitting `./zig-out/bin/yatlc` binary.
 
 ## Running yatlc
 
-Example programs can be found in the `examples/` folder. To compile yatl program,
-just run `./zig-out/bin/yatlc path/to/file.ytl`.
-
 To see help, run `./zig-out/bin/yatlc --help`.
+
+To compile a yatl program, run `./zig-out/bin/yatlc path/to/file.ytl -o binary_name`.
 
 ## Testing `yatlc`
 

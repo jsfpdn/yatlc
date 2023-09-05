@@ -227,6 +227,8 @@ pub const Parser = struct {
                     // Add the arguments to the new scope.
                     fs.t.func.namedParams = true;
                     for (fs.t.func.args.items) |arg| {
+                        var paramAlloc = self.c.genLLVMNameEmpty();
+
                         if (std.mem.eql(u8, arg.name, "")) {
                             if (fs.t.func.namedParams) {
                                 self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name}, true, true);
@@ -234,6 +236,9 @@ pub const Parser = struct {
                             fs.t.func.namedParams = false;
                         } else {
                             var newArg = arg.clone(self.alloc);
+                            self.alloc.free(newArg.llvmName);
+                            newArg.llvmName = paramAlloc;
+
                             self.st.insert(newArg) catch |err| switch (err) {
                                 symbols.SymbolError.SymbolAlreadyExists => {
                                     self.report(fs.location, reporter.Level.ERROR, "cannot define 2 function arguments with the same name", .{}, true, true);
@@ -245,8 +250,6 @@ pub const Parser = struct {
                         }
 
                         var llvmType = codegen.llvmType(arg.t.*);
-                        var paramAlloc = self.c.genLLVMNameEmpty();
-                        defer self.alloc.free(paramAlloc);
 
                         self.c.emitInit(std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{ paramAlloc, llvmType }) catch unreachable);
                         self.c.emitInit(std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmType, arg.llvmName, paramAlloc }) catch unreachable);
@@ -2749,7 +2752,6 @@ pub const Parser = struct {
         var llvmTypes = std.ArrayList([]const u8).init(self.alloc);
         defer {
             for (llvmArgs.items) |arg| self.alloc.free(arg);
-            for (llvmTypes.items) |t| self.alloc.free(t);
 
             llvmArgs.deinit();
             llvmTypes.deinit();
@@ -2813,7 +2815,7 @@ pub const Parser = struct {
             codegen.llvmType(funcSymbol.t.func.retT.*),
             funcSymbol.llvmName,
             llvmTypes,
-            llvmTypes,
+            llvmArgs,
         );
 
         if (funcSymbol.t.func.retT.isUnit()) {
