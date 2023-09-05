@@ -1,7 +1,15 @@
 
 i32 main() {
 
-    @print("Hello, world!");
+    // Builtin function `@print` accepts any literal value:
+    @print(123);
+    @print(true);
+    @print(42.8);
+    @print("haha!");
+    @print('a');
+
+    i32 a = 1968;
+    @print(a);
 
     return 0;
 }

@@ -149,11 +149,11 @@ pub fn main() !u8 {
     var r = reporter.Reporter.init(contents, filename, io.getStdErr().writer());
     var s = scanner.Scanner.init(contents, w);
     var c = codegen.CodeGen.init(allocator);
-    var p = parser.Parser.init(allocator, s, r, c);
+    var p = parser.Parser.init(allocator, s, r, c, llvmFile.writer());
     defer p.deinit();
     defer c.deinit();
 
-    p.parse(llvmFile.writer()) catch {};
+    p.parse() catch {};
 
     const argv = &[_][]const u8{ opts.clangPath, "-Woverride-module", llvmFilename, "-o", opts.executable };
     const result = std.process.Child.exec(.{

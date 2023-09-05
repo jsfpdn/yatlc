@@ -160,7 +160,7 @@ pub const Scanner = struct {
         if (std.mem.eql(u8, "true", self.symbol(tok.*)) or std.mem.eql(u8, "false", self.symbol(tok.*))) {
             tok.tokenType = token.TokenType.C_BOOL;
         } else if (std.mem.eql(u8, "not", self.symbol(tok.*))) {
-            tok.tokenType = token.TokenType.NEG;
+            tok.tokenType = token.TokenType.NOT;
         } else if (std.mem.eql(u8, "and", self.symbol(tok.*))) {
             tok.tokenType = token.TokenType.AND;
         } else if (std.mem.eql(u8, "or", self.symbol(tok.*))) {

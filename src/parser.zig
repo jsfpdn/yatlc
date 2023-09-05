@@ -73,6 +73,7 @@ pub const Parser = struct {
     s: scanner.Scanner,
     r: ?reporter.Reporter,
     c: codegen.CodeGen,
+    w: ?std.fs.File.Writer,
 
     alloc: std.mem.Allocator,
 
@@ -86,14 +87,17 @@ pub const Parser = struct {
     // TODO:
     // * constant folding
     // * IR emitter
-    //      * fix potential issue in the convert function w/ memory leak when `result = temp;`
     //      * handling multiple functions
+    //      * function arguments
+    //      * function calls
+    //      * '\n' ~> '\0A' in strings when printing
 
     pub fn init(
         alloc: std.mem.Allocator,
         s: scanner.Scanner,
         r: ?reporter.Reporter,
         c: codegen.CodeGen,
+        w: ?std.fs.File.Writer,
     ) Parser {
         return .{
             .alloc = alloc,
@@ -101,6 +105,7 @@ pub const Parser = struct {
             .s = s,
             .r = r,
             .c = c,
+            .w = w,
 
             .st = symbols.SymbolTable.init(alloc),
 
@@ -115,7 +120,7 @@ pub const Parser = struct {
         self.contStack.deinit();
     }
 
-    pub fn parse(self: *Parser, writer: std.fs.File.Writer) !void {
+    pub fn parse(self: *Parser) !void {
         defer self.c.deinit();
 
         // Open the global scope.
@@ -146,7 +151,7 @@ pub const Parser = struct {
         // TODO: check for main etc.
         self.st.close();
 
-        try self.c.write(writer);
+        if (self.w) |w| try self.c.write(w);
     }
 
     fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
@@ -193,21 +198,18 @@ pub const Parser = struct {
                 errdefer ft.destroy(self.alloc);
                 ft.func.args = try self.parseArgList();
 
-                var llvmName = if (std.mem.eql(u8, "main", ident.symbol))
-                    std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable
-                else
-                    self.c.genLLVMName(ident.symbol);
-                errdefer self.alloc.free(llvmName);
+                var llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
+                errdefer self.alloc.free(llvmFuncName);
 
                 var fs = symbols.Symbol{
                     .name = ident.symbol,
-                    .llvmName = llvmName,
+                    .llvmName = llvmFuncName,
                     .location = ident,
                     .t = ft,
                     .defined = false,
                 };
 
-                const sig = codegen.signature(self.alloc, llvmName, ft.func.args, t.*);
+                const sig = codegen.signature(self.alloc, llvmFuncName, ft.func.args, t.*);
                 self.c.emitA(sig);
 
                 // Try to parse the function body if it is a function definition.
@@ -277,6 +279,7 @@ pub const Parser = struct {
                                 self.report(fs.location, reporter.Level.ERROR, "cannot return value of type {s} from function that must return {s}", .{ exp.t.?.str(), self.returnType.?.str() }, true, true);
                                 return SyntaxError.TypeError;
                             };
+                            defer self.alloc.free(retVal);
 
                             self.c.emit(
                                 std.fmt.allocPrint(self.alloc, "ret {s} {s}", .{ codegen.llvmType(self.returnType.?.*), retVal }) catch unreachable,
@@ -292,8 +295,11 @@ pub const Parser = struct {
                     self.c.waits = false;
 
                     fs.defined = true;
+
+                    self.c.concatActiveSegments();
                 } else {
                     try self.consume(tt.SEMICOLON);
+                    self.c.concatActiveSegments();
                 }
 
                 // Check that if there's a symbol with the same name, it must be a function with identical
@@ -341,8 +347,6 @@ pub const Parser = struct {
                 }
             },
             else => {
-                // t.destroy(self.alloc);
-
                 self.report(
                     next,
                     reporter.Level.ERROR,
@@ -365,7 +369,10 @@ pub const Parser = struct {
         var argNames = argNamesE.DoNotKnow;
 
         var args = std.ArrayList(symbols.Symbol).init(self.alloc);
-        errdefer args.deinit();
+        errdefer {
+            for (args.items) |arg| arg.destroy(self.alloc);
+            args.deinit();
+        }
 
         while (next.tokenType != tt.RPAREN) {
             if (expectComma) try self.consume(tt.COMMA);
@@ -375,7 +382,6 @@ pub const Parser = struct {
                 .defined = true,
             };
 
-            errdefer s.t.destroy(self.alloc);
             if (argNames == argNamesE.Unnamed or
                 ((self.s.peek().tokenType == tt.COMMA or self.s.peek().tokenType == tt.RPAREN) and argNames == argNamesE.DoNotKnow))
             {
@@ -400,7 +406,7 @@ pub const Parser = struct {
             next = self.s.peek();
         }
 
-        self.consume(tt.RPAREN) catch unreachable;
+        next = self.consumeGet(tt.RPAREN) catch unreachable;
         return args;
     }
 
@@ -421,13 +427,24 @@ pub const Parser = struct {
             },
             tt.LBRACK => {
                 var array: types.Array = .{ .alloc = self.alloc };
-                while (tok.tokenType != tt.RBRACK) {
-                    try self.consume(tt.SUB);
-                    array.dimensions += 1;
 
-                    tok = self.s.next();
-                    if (tok.tokenType == tt.COMMA) {}
+                if (self.s.peek().tokenType == tt.RBRACK) {
+                    self.consume(tt.RBRACK) catch unreachable;
+                } else {
+                    while (true) {
+                        try self.consume(tt.SUB);
+                        array.dimensions += 1;
+
+                        tok = self.s.peek();
+                        if (tok.tokenType == tt.COMMA) {
+                            self.consume(tt.COMMA) catch unreachable;
+                        } else {
+                            try self.consume(tt.RBRACK);
+                            break;
+                        }
+                    }
                 }
+
                 array.ofType = try self.parseType();
                 tp.* = types.Type{ .array = array };
                 return tp;
@@ -494,7 +511,7 @@ pub const Parser = struct {
 
             tok = self.s.peek();
             if (tok.tokenType == tt.SEMICOLON) {
-                if (!semi) {
+                if (!semi and exp.?.semiMustFollow) {
                     self.report(tok, reporter.Level.ERROR, "unexpected ';'", .{}, true, true);
                     return SyntaxError.TypeError;
                 }
@@ -849,6 +866,13 @@ pub const Parser = struct {
         try self.consume(tt.RBRACE);
 
         exp.semiMustFollow = false;
+        if (exp.rValue) |r| {
+            _ = r;
+        } else {
+            // Hack: if body does not generate any rvalue, make empty string
+            // to not break anything.
+            exp.rValue = self.createString("", .{});
+        }
         return exp;
     }
 
@@ -1008,17 +1032,27 @@ pub const Parser = struct {
         if (types.startsType(tok.symbol)) {
             // Current token under the cursor is either a simple type or an array type.
             identType = try self.parseType();
-            errdefer identType.?.destroy(self.alloc);
-
-            identTok = try self.consumeGet(tt.IDENT);
             defer identType.?.destroy(self.alloc);
 
-            var llvmName = try self.declare(identTok.?.symbol, identType.?.clone(self.alloc), identTok.?, false);
+            identTok = try self.consumeGet(tt.IDENT);
+
+            var llvmName = try self.declare(identTok.?.symbol, identType.?, identTok.?, false);
+            errdefer self.alloc.free(llvmName);
 
             exp.t = identType.?.clone(self.alloc);
             exp.semiMustFollow = true;
             exp.hasLValue = true;
             exp.lValue = llvmName;
+
+            exp.rValue = self.c.genLLVMNameEmpty();
+            self.c.emit(
+                self.createString("{s} = load {s}, ptr {s}", .{
+                    exp.rValue.?,
+                    codegen.llvmType(exp.t.?.*),
+                    llvmName,
+                }),
+                self.c.lastBlockIndex(),
+            );
 
             if (!identType.?.isUnit()) {
                 self.c.emitInit(
@@ -1199,7 +1233,7 @@ pub const Parser = struct {
             .name = ident,
             .llvmName = self.c.genLLVMName(ident),
             .location = at,
-            .t = t,
+            .t = t.clone(self.alloc),
             .defined = defined,
         };
         self.st.insert(s) catch unreachable;
@@ -2064,7 +2098,7 @@ pub const Parser = struct {
                 errdefer exp.destroy(self.alloc);
 
                 if (!exp.t.?.isIntegral()) {
-                    self.report(tok, reporter.Level.ERROR, "cannot perform bitwise not on '{s}'", .{exp.t.?.str()}, true, true);
+                    self.report(tok, reporter.Level.ERROR, "cannot perform bitwise negation on '{s}'", .{exp.t.?.str()}, true, true);
                     return SyntaxError.TypeError;
                 }
 
@@ -2173,7 +2207,7 @@ pub const Parser = struct {
                 if (result) |res| self.alloc.free(res);
                 result = self.c.genLLVMNameEmpty();
 
-                const opPrefix = if (!t.isDouble() and !t.isFloat()) if (t.isSigned()) "s" else "u" else "";
+                const opPrefix = if (!t.isDouble() and !t.isFloat() and op.tokenType != tt.MUL) if (t.isSigned()) "s" else "u" else "";
                 const llvmType = codegen.llvmType(t.*);
                 const llvmOp = if (t.isFloat() or t.isDouble())
                     codegen.llvmFloatOp(op.tokenType)
@@ -2274,7 +2308,7 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
-                    var t = types.Array.create(self.alloc, 0, exp.t.?);
+                    var t = types.Array.create(self.alloc, 0, exp.t.?.clone(self.alloc));
                     exp.t.?.destroy(self.alloc);
                     exp.t = t;
 
@@ -2289,7 +2323,7 @@ pub const Parser = struct {
                 },
                 tt.LBRACK => {
                     self.consume(tt.LBRACK) catch unreachable;
-                    if (!exp.t.?.isArray()) {
+                    if (!exp.t.?.isArray() and !exp.t.?.isPointer()) {
                         self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.?.str()}, true, true);
                         return SyntaxError.TypeError;
                     }
@@ -2308,12 +2342,15 @@ pub const Parser = struct {
                             break :blk ofType;
                         };
                         exp.hasLValue = true;
+
                         if (exp.lValue) |lv| self.alloc.free(lv);
                         exp.lValue = self.createString("{s}", .{exp.rValue.?});
                         // TODO: exp.rValue = name of the load instruction.
 
                         exp.semiMustFollow = true;
                         exp.endsWithReturn = false;
+
+                        tok = self.s.peek();
                         continue;
                     }
 
@@ -2380,6 +2417,8 @@ pub const Parser = struct {
                         exp.hasLValue = true;
                         exp.semiMustFollow = true;
                         exp.endsWithReturn = false;
+
+                        tok = self.s.peek();
                         continue;
                     }
 
@@ -2387,15 +2426,25 @@ pub const Parser = struct {
                     defer self.alloc.free(where);
 
                     for (1..exp.t.?.array.dimensions) |i| {
+                        var dimensionPtr = self.c.genLLVMNameEmpty();
                         var dimension = self.c.genLLVMNameEmpty();
-                        defer self.alloc.free(dimension);
+
+                        defer {
+                            self.alloc.free(dimensionPtr);
+                            self.alloc.free(dimension);
+                        }
 
                         self.c.emit(
                             self.createString("{s} = getelementptr i64, ptr {s}, i64 {d}", .{
-                                dimension,
+                                dimensionPtr,
                                 exp.rValue.?,
                                 -@as(i128, @intCast(exp.t.?.array.dimensions)) + i,
                             }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        self.c.emit(
+                            self.createString("{s} = load i64, ptr {s}", .{ dimension, dimensionPtr }),
                             self.c.lastBlockIndex(),
                         );
 
@@ -2430,14 +2479,29 @@ pub const Parser = struct {
                         self.c.lastBlockIndex(),
                     );
 
-                    exp.lt.?.destroy(self.alloc);
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = self.c.genLLVMNameEmpty();
+
+                    self.c.emit(
+                        self.createString("{s} = load {s}, ptr {s}", .{
+                            exp.rValue.?,
+                            codegen.llvmType(exp.t.?.array.ofType.*),
+                            wherePtr,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
+                    if (exp.lt) |lt| {
+                        lt.destroy(self.alloc);
+                        exp.lt = null;
+                    }
+
                     exp.lt = exp.t.?.array.ofType.clone(self.alloc);
                     exp.t = blk: {
                         var ofType = exp.t.?.array.ofType.clone(self.alloc);
                         exp.t.?.destroy(self.alloc);
                         break :blk ofType;
                     };
-                    // TODO: exp.rValue = ...
 
                     exp.destroyLValue(self.alloc);
                     exp.hasLValue = true;
@@ -2461,6 +2525,7 @@ pub const Parser = struct {
 
                 var exp = try self.parseExpression();
                 errdefer exp.destroy(self.alloc);
+
                 exp.semiMustFollow = true;
 
                 try self.consume(tt.RPAREN);
@@ -2593,14 +2658,36 @@ pub const Parser = struct {
                     return cExp;
                 }
                 // We're dealing with builtin functions.
-                const n = self.s.next();
+                var n = self.s.next();
                 if (n.tokenType == tt.PRINT) {
                     try self.consume(tt.LPAREN);
 
-                    var fmt = try self.consumeGet(tt.C_STRING);
-                    // TODO: Think about printing integers.
+                    n = self.s.next();
+                    switch (n.tokenType) {
+                        tt.C_STRING => self.c.genPrintString(n.symbol[1 .. n.symbol.len - 1]),
+                        tt.C_CHAR => self.c.genPrintString(n.symbol[1 .. n.symbol.len - 1]),
+                        tt.C_INT, tt.C_BOOL, tt.C_FLOAT => self.c.genPrintString(n.str()),
+                        tt.IDENT => {
+                            if (self.st.get(n.symbol)) |s| {
+                                var result = self.c.genLLVMNameEmpty();
+                                defer self.alloc.free(result);
 
-                    self.c.genPrint(fmt.symbol);
+                                self.c.emit(
+                                    self.createString("{s} = load {s}, ptr {s}", .{
+                                        result,
+                                        codegen.llvmType(s.t.*),
+                                        s.llvmName,
+                                    }),
+                                    self.c.lastBlockIndex(),
+                                );
+
+                                self.c.genPrintNumber(result);
+                            }
+
+                            // TODO: What to print if the ident is of type array? Pointer?
+                        },
+                        else => @panic(self.createString("cannot print {s}", .{n.tokenType.str()})),
+                    }
 
                     try self.consume(tt.RPAREN);
                 }
@@ -2658,12 +2745,51 @@ pub const Parser = struct {
 
         var funcSymbol = self.st.get(ident.symbol) orelse unreachable;
 
+        var llvmArgs = std.ArrayList([]const u8).init(self.alloc);
+        var llvmTypes = std.ArrayList([]const u8).init(self.alloc);
+        defer {
+            for (llvmArgs.items) |arg| self.alloc.free(arg);
+            for (llvmTypes.items) |t| self.alloc.free(t);
+
+            llvmArgs.deinit();
+            llvmTypes.deinit();
+        }
+
         for (0..funcSymbol.t.func.args.items.len, funcSymbol.t.func.args.items) |i, arg| {
             var exp = try self.parseExpression();
             defer exp.destroy(self.alloc);
-            if (!exp.t.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
-                // TODO: Prepare LLVM argument by converting types if necessary
-            } else if (!arg.t.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
+
+            if (!exp.t.?.isUnit()) {
+                llvmArgs.append(self.convert(
+                    exp.t.?,
+                    arg.t,
+                    ConvMode.IMPLICIT,
+                    exp.rValue.?,
+                    self.c.lastBlockIndex(),
+                ) catch |err| {
+                    switch (err) {
+                        ConvErr.Overflow => self.report(
+                            ident,
+                            reporter.Level.ERROR,
+                            "cannot cast value of type {s} to {s} due to possible overflow",
+                            .{ exp.t.?.str(), arg.t.str() },
+                            true,
+                            true,
+                        ),
+                        ConvErr.NoImplicit => self.report(
+                            ident,
+                            reporter.Level.ERROR,
+                            "cannot cast value of type {s} to {s}",
+                            .{ exp.t.?.str(), arg.t.str() },
+                            true,
+                            true,
+                        ),
+                    }
+                    return SyntaxError.TypeError;
+                }) catch unreachable;
+
+                llvmTypes.append(codegen.llvmType(arg.t.*)) catch unreachable;
+            } else if (!arg.t.isUnit()) {
                 // TODO: Fix error reporting.
                 return SyntaxError.TypeError;
             }
@@ -2672,17 +2798,35 @@ pub const Parser = struct {
         }
 
         try self.consume(tt.RPAREN);
-        // TODO: Emit IR.
 
-        return Expression{
+        var exp = Expression{
             .t = funcSymbol.t.func.retT.clone(self.alloc),
             .lt = funcSymbol.t.func.retT.clone(self.alloc),
-            .rValue = self.createString("TODO: name of a call instruction", .{}),
             .hasLValue = false,
             .semiMustFollow = true,
             .endsWithReturn = false,
             .callsFunction = true,
         };
+
+        var funcCall = codegen.funcCall(
+            self.alloc,
+            codegen.llvmType(funcSymbol.t.func.retT.*),
+            funcSymbol.llvmName,
+            llvmTypes,
+            llvmTypes,
+        );
+
+        if (funcSymbol.t.func.retT.isUnit()) {
+            self.c.emit(funcCall, self.c.lastBlockIndex());
+        } else {
+            defer self.alloc.free(funcCall);
+
+            var result = self.c.genLLVMNameEmpty();
+            self.c.emit(self.createString("{s} = {s}", .{ result, funcCall }), self.c.lastBlockIndex());
+            exp.rValue = result;
+        }
+
+        return exp;
     }
 
     fn consume(self: *Parser, want: tt) SyntaxError!void {
@@ -2962,7 +3106,7 @@ pub const Parser = struct {
             unreachable;
         }
 
-        if (!from.isSigned()) {
+        if (!from.isSigned() and from.isNumeric()) {
             if (to.simple.width() > from.simple.width()) {
                 // If `to` has greater bit width than `from`.
                 self.c.emit(

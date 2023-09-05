@@ -1,9 +1,19 @@
-i64 main(i32 a, i32 b) {
+i32 helper() {
+    bool a = false;
+
+    @print("helper");
+
+    return 42;
+}
+
+unit helper3() {}
+
+i64 main() {
     i32 c = 0;
     c = 10;
 
     while (true) {
-        c += b;
+        c += 1;
 
         break;
     }
@@ -12,7 +22,7 @@ i64 main(i32 a, i32 b) {
         i32 a = 10;
     }
 
-    i32 d = c == 14 ? a : 30;
+    i32 d = c == 14 ? c : 30;
 
     if (c < 25) {
         c += 10;
@@ -24,5 +34,11 @@ i64 main(i32 a, i32 b) {
         c -= 10;
     }
 
-    return @i64(a + b);
+    i32 a = helper();
+    @print(a);
+
+    helper3();
+
+    return c * 3;
 }
+

@@ -2,8 +2,10 @@
     /* and nested comments! */
 */
 
+/*
 // global_variable is a global variable of type i64.
 i64 global_variable = 123;
+*/
 
 // This is a forward declaration of a function that takes
 // two i32 values and returns a boolean.
@@ -19,7 +21,7 @@ bool helper(i32 a, i32 b) {
     // Let's explicitely cast `a`, which is of type i32, to i64.
     i64 f = @i64(a);
 
-    return d + c == global_variable;
+    return d + c == 10;
 }
 
 bool booleanOperators() {

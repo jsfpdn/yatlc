@@ -11,6 +11,7 @@ pub const CodeGen = struct {
     alloc: std.mem.Allocator,
 
     globals: []const u8,
+    readySegments: std.ArrayList([]const u8),
 
     segments: std.ArrayList([]const u8),
     commandNum: u64 = 0,
@@ -22,8 +23,9 @@ pub const CodeGen = struct {
     pub fn init(alloc: std.mem.Allocator) CodeGen {
         var c = CodeGen{
             .alloc = alloc,
-            .segments = std.ArrayList([]const u8).init(alloc),
             .globals = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
+            .readySegments = std.ArrayList([]const u8).init(alloc),
+            .segments = std.ArrayList([]const u8).init(alloc),
             .waitingBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .currentBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .waits = false,
@@ -33,10 +35,12 @@ pub const CodeGen = struct {
     }
 
     pub fn deinit(self: *CodeGen) void {
-        for (self.segments.items) |b| {
-            self.alloc.free(b);
-        }
+        for (self.segments.items) |s| self.alloc.free(s);
+        for (self.readySegments.items) |s| self.alloc.free(s);
+
         self.segments.deinit();
+        self.readySegments.deinit();
+
         self.alloc.free(self.globals);
         self.alloc.free(self.waitingBlock);
         self.alloc.free(self.currentBlock);
@@ -45,6 +49,26 @@ pub const CodeGen = struct {
     pub fn newSegment(self: *CodeGen) void {
         var s = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
         self.segments.append(s) catch unreachable;
+    }
+
+    /// concatActiveSegments concatenates all the currently active segments into one segment
+    /// and moves it to `self.readySegments`. Active segments must be concatenated like
+    /// this after a function has been completely parsed and analyzed.
+    pub fn concatActiveSegments(self: *CodeGen) void {
+        var rs = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
+
+        for (self.segments.items) |s| {
+            // Get rid of the segment since we do not need it anymore.
+            defer self.alloc.free(s);
+
+            var n = std.fmt.allocPrint(self.alloc, "{s}{s}", .{ rs, s }) catch unreachable;
+            self.alloc.free(rs);
+            rs = n;
+        }
+
+        self.segments.resize(0) catch unreachable;
+
+        self.readySegments.append(rs) catch unreachable;
     }
 
     /// emitA takes a string and appends it immediately after the contents of the last segment.
@@ -122,16 +146,54 @@ pub const CodeGen = struct {
         return llvmName;
     }
 
-    pub fn genPrint(self: *CodeGen, fmt: []const u8) void {
+    pub fn genLLVMFuncName(self: *CodeGen, funcName: []const u8) []const u8 {
+        if (std.mem.eql(u8, funcName, "main")) return std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable;
+
+        var llvmFuncName = std.fmt.allocPrint(self.alloc, "@{s}.{d}", .{ funcName, self.commandNum }) catch unreachable;
+        self.commandNum += 1;
+        return llvmFuncName;
+    }
+
+    pub fn genPrintNumber(self: *CodeGen, number: []const u8) void {
         var fmtStr = std.fmt.allocPrint(self.alloc, "@.fmt.{d}", .{self.commandNum}) catch unreachable;
         defer self.alloc.free(fmtStr);
         self.commandNum += 1;
 
-        // TODO: Handle special characters: terminal zero, newline
-        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ {d} x i8 ] c{s}", .{
+        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ 3 x i8 ] c\"%d\\00\"", .{
             fmtStr,
-            fmt.len - 2,
-            fmt,
+        }) catch unreachable;
+        defer self.alloc.free(fmtGlobal);
+
+        var n = std.fmt.allocPrint(self.alloc, "{s}{s}\n\n", .{ self.globals, fmtGlobal }) catch unreachable;
+        self.alloc.free(self.globals);
+        self.globals = n;
+
+        var result = self.genLLVMNameEmpty();
+        defer self.alloc.free(result);
+        self.emit(
+            std.fmt.allocPrint(
+                self.alloc,
+                "{s} = call i32 (ptr, ...) @printf(ptr noundef getelementptr ([ 3 x i8 ], [ 3 x i8 ]* {s}, i32 0, i32 0), i32 {s})",
+                .{
+                    result,
+                    fmtStr,
+                    number,
+                },
+            ) catch unreachable,
+            self.lastBlockIndex(),
+        );
+    }
+
+    pub fn genPrintString(self: *CodeGen, string: []const u8) void {
+        var fmtStr = std.fmt.allocPrint(self.alloc, "@.fmt.{d}", .{self.commandNum}) catch unreachable;
+        defer self.alloc.free(fmtStr);
+        self.commandNum += 1;
+
+        // TODO: Handle special characters: replace '\n' with '\0A'
+        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ {d} x i8 ] c\"{s}\\00\"", .{
+            fmtStr,
+            string.len + 1,
+            string,
         }) catch unreachable;
         defer self.alloc.free(fmtGlobal);
 
@@ -147,23 +209,24 @@ pub const CodeGen = struct {
                 "{s} = call i32 (ptr, ...) @printf(ptr noundef getelementptr ([ {d} x i8 ], [ {d} x i8 ]* {s}, i32 0, i32 0))",
                 .{
                     result,
-                    fmt.len - 2,
-                    fmt.len - 2,
+                    string.len + 1,
+                    string.len + 1,
                     fmtStr,
                 },
             ) catch unreachable,
             self.lastBlockIndex(),
         );
-
-        self.commandNum += 1;
     }
 
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
         _ = try writer.write(self.globals);
+
+        // Add declaration for the printf function.
         _ = try writer.write("declare i32 @printf(ptr noundef, ...)\n\n");
 
-        for (self.segments.items) |segment| {
+        for (self.readySegments.items) |segment| {
             _ = try writer.write(segment);
+            _ = try writer.write("\n");
         }
     }
 
@@ -179,7 +242,7 @@ pub const CodeGen = struct {
         c.emitInit(std.fmt.allocPrint(std.testing.allocator, "muhehehe2", .{}) catch unreachable);
         c.emitBlock("%blok1");
 
-        try std.testing.expectEqualStrings("mehehe\nblok1:", c.segments.items[1]);
+        try std.testing.expectEqualStrings("mehehe\nblok1:\n", c.segments.items[1]);
         try std.testing.expectEqualStrings("  muhehehe\n  muhehehe2\n", c.segments.items[0]);
     }
 };
@@ -200,6 +263,41 @@ pub fn signature(alloc: std.mem.Allocator, name: []const u8, args: std.ArrayList
     }
     defer alloc.free(sig);
     return std.fmt.allocPrint(alloc, "{s})", .{sig}) catch unreachable;
+}
+
+pub fn funcCall(
+    alloc: std.mem.Allocator,
+    llvmRetType: []const u8,
+    llvmFuncName: []const u8,
+    llvmArgTypes: std.ArrayList([]const u8),
+    llvmParamNames: std.ArrayList([]const u8),
+) []const u8 {
+    if (llvmArgTypes.items.len != llvmParamNames.items.len) @panic("arg names and their types must match");
+
+    var tmp = std.fmt.allocPrint(alloc, "call {s} {s}(", .{ llvmRetType, llvmFuncName }) catch unreachable;
+    defer alloc.free(tmp);
+
+    if (llvmParamNames.items.len > 0) {
+        var tmp1 = std.fmt.allocPrint(alloc, "{s}{s} {s}", .{
+            tmp,
+            llvmArgTypes.items[0],
+            llvmParamNames.items[0],
+        }) catch unreachable;
+        alloc.free(tmp);
+        tmp = tmp1;
+
+        for (1..llvmParamNames.items.len) |i| {
+            var tmp2 = std.fmt.allocPrint(alloc, "{s}, {s} {s}", .{
+                tmp,
+                llvmArgTypes.items[i],
+                llvmParamNames.items[i],
+            }) catch unreachable;
+            alloc.free(tmp);
+            tmp = tmp2;
+        }
+    }
+
+    return std.fmt.allocPrint(alloc, "{s})", .{tmp}) catch unreachable;
 }
 
 pub fn llvmType(t: types.Type) []const u8 {

@@ -11,5 +11,7 @@ i32 main() {
 
     bool f = 10 < 12;
 
+    bool h = not h;
+
     return @i32(0);
 }

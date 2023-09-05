@@ -36,7 +36,7 @@ test "parse types" {
     for (cases) |tc| {
         var s = scanner.Scanner.init(tc.input, null);
         var c = codegen.CodeGen.init(std.testing.allocator);
-        var p = parser.Parser.init(std.testing.allocator, s, null, c);
+        var p = parser.Parser.init(std.testing.allocator, s, null, c, null);
         defer p.deinit();
         defer c.deinit();
 
@@ -68,9 +68,12 @@ test "parse correct top level statement" {
     for (cases) |tc| {
         var s = scanner.Scanner.init(tc.input, null);
         var c = codegen.CodeGen.init(std.testing.allocator);
-        defer c.deinit();
-        var p = parser.Parser.init(std.testing.allocator, s, null, c);
-        defer p.deinit();
+        var p = parser.Parser.init(std.testing.allocator, s, null, c, null);
+
+        defer {
+            c.deinit();
+            p.deinit();
+        }
 
         try p.parse();
     }
