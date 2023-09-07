@@ -76,7 +76,8 @@ test "scan identifiers, keywords, and builtin" {
         .{ .symbol = "float", .tokenType = TokenType.IDENT },
         .{ .symbol = "len", .tokenType = TokenType.LEN },
         .{ .symbol = "print", .tokenType = TokenType.PRINT },
-        .{ .symbol = "read", .tokenType = TokenType.READ },
+        .{ .symbol = "readln", .tokenType = TokenType.READLN },
+        .{ .symbol = "exit", .tokenType = TokenType.EXIT },
         .{ .symbol = "<", .tokenType = TokenType.LT },
         .{ .symbol = "<<", .tokenType = TokenType.B_LSH },
         .{ .symbol = "<=", .tokenType = TokenType.LEQ },
@@ -87,7 +88,7 @@ test "scan identifiers, keywords, and builtin" {
         .{ .symbol = "EOF", .tokenType = TokenType.EOF },
     };
 
-    const contents = "break continue \n\t else if return while \t\n do identifier Identifier Identifier2 __Ident_ifier_ bool \t\n i32 \t i16 \n\t u32 u16 char str void float len print read < << <= > >> >= not\n\t";
+    const contents = "break continue \n\t else if return while \t\n do identifier Identifier Identifier2 __Ident_ifier_ bool \t\n i32 \t i16 \n\t u32 u16 char str void float len print readln exit < << <= > >> >= not\n\t";
     var s = Scanner.init(contents, null);
 
     var tok: token.Token = undefined;

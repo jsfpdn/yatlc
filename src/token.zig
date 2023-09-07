@@ -127,9 +127,17 @@ pub const TokenType = enum(u8) {
     HASH, // #
 
     // names of built-in functions that must be preceeded with "@"
+    ALLOC, // alloc
+    MALLOC, // malloc
+    REALLOC, // realloc
+    FREE, // free
+    SIZEOF, // sizeof
     LEN, // len
     PRINT, // print
-    READ, // read
+    PRINTLN, // println
+    READLN, // readln
+    BITCAST, // bitcast
+    EXIT, // exit
 
     const keywords = std.ComptimeStringMap(TokenType, .{
         .{ "break", .BREAK },
@@ -143,9 +151,16 @@ pub const TokenType = enum(u8) {
     });
 
     const builtins = std.ComptimeStringMap(TokenType, .{
+        .{ "alloc", .ALLOC },
+        .{ "malloc", .MALLOC },
+        .{ "realloc", .REALLOC },
+        .{ "free", .FREE },
+        .{ "sizeof", .SIZEOF },
         .{ "len", .LEN },
         .{ "print", .PRINT },
-        .{ "read", .READ },
+        .{ "println", .PRINTLN },
+        .{ "readln", .READLN },
+        .{ "exit", .EXIT },
     });
 
     pub fn getKeyword(bytes: []const u8) ?TokenType {
@@ -157,7 +172,7 @@ pub const TokenType = enum(u8) {
     }
 
     pub fn isBuiltin(token: TokenType) bool {
-        return @intFromEnum(token) >= @intFromEnum(TokenType.LEN) and @intFromEnum(token) <= @intFromEnum(TokenType.READ);
+        return @intFromEnum(token) >= @intFromEnum(TokenType.ALLOC) and @intFromEnum(token) <= @intFromEnum(TokenType.EXIT);
     }
 
     // Assignments are =, +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=, &&= and ||=.
@@ -270,9 +285,17 @@ pub const TokenType = enum(u8) {
         "@",
         "#",
 
+        "alloc",
+        "malloc",
+        "realloc",
+        "free",
+        "sizeof",
         "len",
         "print",
-        "read",
+        "println",
+        "readln",
+        "bitcast",
+        "exit",
     };
 
     pub fn str(self: TokenType) [:0]const u8 {

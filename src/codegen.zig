@@ -218,11 +218,118 @@ pub const CodeGen = struct {
         );
     }
 
-    pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
-        _ = try writer.write(self.globals);
+    pub fn emitAllocPtr(self: *CodeGen, toType: types.Type) []const u8 {
+        const result = self.genLLVMNameEmpty();
 
-        // Add declaration for the printf function.
-        _ = try writer.write("declare i32 @printf(ptr noundef, ...)\n\n");
+        self.emit(
+            std.fmt.allocPrint(self.alloc, "{s} = call ptr @malloc(i64 {d})", .{
+                result,
+                types.SimpleType.width(toType.simple),
+            }) catch unreachable,
+            self.lastBlockIndex(),
+        );
+
+        return result;
+    }
+
+    const customDefines =
+        \\define i64 @my_len(ptr %x0) {
+        \\  %x1 = getelementptr i64, ptr %x0, i64 -1
+        \\  %x2 = load i64, ptr %x1
+        \\  ret i64 %x2
+        \\}
+        \\define void @my_print(ptr %x0) {
+        \\  %x1 = call ptr @__acrt_iob_func(i32 1)
+        \\  %x2 = call i32 @fputs(ptr %x0, ptr %x1)
+        \\  ret void
+        \\}
+        \\define void @my_stringFree(ptr %x0) {
+        \\  %x1 = getelementptr i64, ptr %x0, i64 -1
+        \\  call void @free(ptr %x1)
+        \\  ret void
+        \\}
+        \\define ptr @my_readLine() {
+        \\  %x1 = alloca ptr
+        \\  %x2 = alloca ptr
+        \\  %x3 = alloca i64
+        \\  %x4 = alloca i64
+        \\  %x5 = alloca i8
+        \\  %x6 = call ptr @malloc(i64 256)
+        \\  store ptr %x6, ptr %x1
+        \\  %x7 = getelementptr i8, ptr %x6, i64 8
+        \\  store ptr %x7, ptr %x2
+        \\  store i64 256, ptr %x3
+        \\  store i64 8, ptr %x4
+        \\  br label %x8
+        \\x8:
+        \\  %x9 = call ptr @__acrt_iob_func(i32 0)
+        \\  %x10 = call i32 @getc(ptr %x9)
+        \\  %x11 = trunc i32 %x10 to i8
+        \\  store i8 %x11, ptr %x5
+        \\  %x12 = icmp eq i8 %x11, 10
+        \\  br i1 %x12, label %x13, label %x22
+        \\x13:
+        \\  %x14 = load i64, ptr %x4
+        \\  %x15 = add i64 %x14, 1
+        \\  %x16 = load ptr, ptr %x1
+        \\  %x17 = call ptr @realloc(ptr %x16, i64 %x15)
+        \\  store ptr %x17, ptr %x1
+        \\  %x21 = getelementptr i8, ptr %x17, i64 %x14
+        \\  store i8 0, ptr %x21
+        \\  br label %x40
+        \\x22:
+        \\  %x23 = load i64, ptr %x4
+        \\  %x24 = load i64, ptr %x3
+        \\  %x25 = icmp eq i64 %x23, %x24
+        \\  br i1 %x25, label %x26, label %x33
+        \\x26:
+        \\  %x27 = load i64, ptr %x3
+        \\  %x28 = add i64 %x27, 256
+        \\  store i64 %x28, ptr %x3
+        \\  %x29 = load ptr, ptr %x1
+        \\  %x30 = call ptr @realloc(ptr %x29, i64 %x28)
+        \\  store ptr %x30, ptr %x1
+        \\  %x31 = load i64, ptr %x4
+        \\  %x32 = getelementptr i8, ptr %x30, i64 %x31
+        \\  store ptr %x32, ptr %x2
+        \\  br label %x33
+        \\x33:
+        \\  %x34 = load i8, ptr %x5
+        \\  %x35 = load ptr, ptr %x2
+        \\  store i8 %x34, ptr %x35
+        \\  %x36 = load ptr, ptr %x2
+        \\  %x37 = getelementptr i8, ptr %x36, i32 1
+        \\  store ptr %x37, ptr %x2
+        \\  %x38 = load i64, ptr %x4
+        \\  %x39 = add i64 %x38, 1
+        \\  store i64 %x39, ptr %x4
+        \\  br label %x8
+        \\x40:
+        \\  %x41 = load i64, ptr %x4
+        \\  %x42 = sub i64 %x41, 8
+        \\  %x43 = load ptr, ptr %x1
+        \\  store i64 %x42, ptr %x43
+        \\  %x44 = getelementptr i8, ptr %x43, i64 8
+        \\  ret ptr %x44
+        \\}
+        \\
+    ;
+
+    const customDecls =
+        \\declare ptr @malloc(i64)
+        \\declare i32 @getc(ptr)
+        \\declare ptr @__acrt_iob_func(i32)
+        \\declare ptr @realloc(ptr, i64)
+        \\declare i32 @fputs(ptr, ptr)
+        \\declare void @free(ptr)
+        \\declare void @exit(i32 noundef)
+        \\
+    ;
+    pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
+        _ = try writer.write(CodeGen.customDecls);
+        _ = try writer.write("\n");
+
+        _ = try writer.write(self.globals);
 
         for (self.readySegments.items) |segment| {
             _ = try writer.write(segment);
@@ -272,7 +379,6 @@ pub fn funcCall(
     llvmArgTypes: std.ArrayList([]const u8),
     llvmParamNames: std.ArrayList([]const u8),
 ) []const u8 {
-    defer std.log.err("returning from codegen.funcCall", .{});
     if (llvmArgTypes.items.len != llvmParamNames.items.len) @panic("arg names and their types must match");
 
     var tmp = std.fmt.allocPrint(alloc, "call {s} {s}(", .{ llvmRetType, llvmFuncName }) catch unreachable;

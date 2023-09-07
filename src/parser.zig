@@ -2627,83 +2627,28 @@ pub const Parser = struct {
                 };
             },
             tt.AT => {
-                const at = self.consumeGet(tt.AT) catch unreachable;
+                self.consume(tt.AT) catch unreachable;
 
                 if (types.startsType(self.s.peek().symbol)) {
                     // We're dealing with explicit type conversion.
-
-                    var newT = try self.parseType();
-                    defer newT.destroy(self.alloc);
-
-                    var cExp = try self.parseI();
-                    errdefer cExp.destroy(self.alloc);
-
-                    const result = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, cExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                        // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                        switch (err) {
-                            ConvErr.Overflow => self.report(at, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ cExp.t.?.str(), newT.str() }, true, true),
-                            ConvErr.NoImplicit => self.report(at, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ cExp.t.?.str(), newT.str() }, true, true),
-                        }
-
-                        return SyntaxError.TypeError;
-                    };
-
-                    cExp.t.?.destroy(self.alloc);
-                    cExp.t = newT.clone(self.alloc);
-
-                    cExp.destroyLValue(self.alloc);
-
-                    cExp.destroyRValue(self.alloc);
-                    cExp.rValue = result;
-
-                    cExp.semiMustFollow = true;
-                    cExp.endsWithReturn = false;
-                    return cExp;
-                }
-                // We're dealing with builtin functions.
-                var n = self.s.next();
-                if (n.tokenType == tt.PRINT) {
-                    try self.consume(tt.LPAREN);
-
-                    n = self.s.next();
-                    switch (n.tokenType) {
-                        tt.C_STRING => self.c.genPrintString(n.symbol[1 .. n.symbol.len - 1]),
-                        tt.C_CHAR => self.c.genPrintString(n.symbol[1 .. n.symbol.len - 1]),
-                        tt.C_INT, tt.C_BOOL, tt.C_FLOAT => self.c.genPrintString(n.str()),
-                        tt.IDENT => {
-                            if (self.st.get(n.symbol)) |s| {
-                                var result = self.c.genLLVMNameEmpty();
-                                defer self.alloc.free(result);
-
-                                self.c.emit(
-                                    self.createString("{s} = load {s}, ptr {s}", .{
-                                        result,
-                                        codegen.llvmType(s.t.*),
-                                        s.llvmName,
-                                    }),
-                                    self.c.lastBlockIndex(),
-                                );
-
-                                self.c.genPrintNumber(result);
-                            }
-
-                            // TODO: What to print if the ident is of type array? Pointer?
-                        },
-                        else => @panic(self.createString("cannot print {s}", .{n.tokenType.str()})),
-                    }
-
-                    try self.consume(tt.RPAREN);
+                    return self.parseCast();
                 }
 
-                // TODO: Emit IR for calling builtin functions.
-                return Expression{
-                    .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
-                    .hasLValue = false,
-                    .rValue = self.createString("TODO: Name of the instruction", .{}),
-                    .semiMustFollow = true,
-                    .endsWithReturn = false,
-                    .callsFunction = true,
-                };
+                if (token.TokenType.isBuiltin(self.s.peek().tokenType)) {
+                    // We're dealing with builtin functions.
+                    return self.parseBuiltinCall();
+                }
+
+                self.report(
+                    next,
+                    reporter.Level.ERROR,
+                    "expected either type cast or builtin function call after '@'",
+                    .{},
+                    true,
+                    true,
+                );
+
+                return SyntaxError.TypeError;
             },
             tt.C_CHAR => {
                 const char = self.consumeGet(tt.C_CHAR) catch unreachable;
@@ -2738,6 +2683,538 @@ pub const Parser = struct {
             },
         }
         unreachable;
+    }
+
+    fn parseCast(self: *Parser) SyntaxError!Expression {
+        const loc = self.s.peek();
+
+        var newT = try self.parseType();
+        defer newT.destroy(self.alloc);
+
+        var cExp = try self.parseI();
+        errdefer cExp.destroy(self.alloc);
+
+        const result = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, cExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
+            // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    loc,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ cExp.t.?.str(), newT.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    loc,
+                    reporter.Level.ERROR,
+                    "cannot cast value value of type {s} to {s}",
+                    .{ cExp.t.?.str(), newT.str() },
+                    true,
+                    true,
+                ),
+            }
+
+            return SyntaxError.TypeError;
+        };
+
+        cExp.t.?.destroy(self.alloc);
+        cExp.t = newT.clone(self.alloc);
+
+        cExp.destroyLValue(self.alloc);
+
+        cExp.destroyRValue(self.alloc);
+        cExp.rValue = result;
+
+        cExp.semiMustFollow = true;
+        cExp.endsWithReturn = false;
+        return cExp;
+    }
+
+    fn parseBuiltinCall(self: *Parser) SyntaxError!Expression {
+        const builtinTok = self.s.next();
+
+        return switch (builtinTok.tokenType) {
+            tt.ALLOC => self.parseBuiltinAlloc(),
+            tt.MALLOC => self.parseBuiltinMalloc(),
+            tt.REALLOC => return self.parseBuiltinRealloc(),
+            tt.FREE => self.parseBuiltinFree(),
+            tt.SIZEOF => self.parseBuiltinSizeof(),
+            tt.LEN => self.parseBuiltinLen(),
+            tt.PRINT, tt.PRINTLN => @panic("TODO: Implement print/println"),
+            tt.READLN => @panic("TODO: Implement readln"),
+            tt.BITCAST => self.parseBuiltinBitcast(),
+            tt.EXIT => self.parseBuiltinExit(),
+            else => unreachable,
+        };
+    }
+
+    fn parseBuiltinAlloc(self: *Parser) SyntaxError!Expression {
+        const lparen = try self.consumeGet(tt.LPAREN);
+
+        const ptrT = try self.parseType();
+        defer ptrT.destroy(self.alloc);
+
+        if (ptrT.isPointer()) {
+            try self.consume(tt.RPAREN);
+
+            var result = self.c.emitAllocPtr(ptrT.array.ofType.*);
+            return Expression{
+                .t = ptrT.clone(self.alloc),
+                .rValue = result,
+                .semiMustFollow = true,
+            };
+        }
+
+        if (ptrT.isArray()) {
+            var width = ptrT.array.dimensions;
+
+            var tSize = self.createString("{d}", .{width});
+            var newTSize = self.createString("{s}", .{tSize});
+
+            defer {
+                self.alloc.free(tSize);
+                self.alloc.free(newTSize);
+            }
+
+            var dimensions = std.ArrayList([]const u8).initCapacity(self.alloc, ptrT.array.dimensions) catch unreachable;
+            defer {
+                for (dimensions.items) |d| self.alloc.free(d);
+                dimensions.deinit();
+            }
+
+            var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
+            defer helperI64T.destroy(self.alloc);
+
+            for (0..ptrT.array.dimensions) |i| {
+                _ = i;
+                var next = try self.consumeGet(tt.COMMA);
+                var exp = try self.parseExpression();
+                defer exp.destroy(self.alloc);
+
+                var dimension = self.convert(
+                    exp.t.?,
+                    helperI64T,
+                    ConvMode.IMPLICIT,
+                    exp.rValue.?,
+                    self.c.lastBlockIndex(),
+                ) catch |err| {
+                    switch (err) {
+                        ConvErr.Overflow => self.report(
+                            next,
+                            reporter.Level.ERROR,
+                            "cannot cast value of type {s} to {s} due to possible overflow",
+                            .{ exp.t.?.str(), helperI64T.str() },
+                            true,
+                            true,
+                        ),
+                        ConvErr.NoImplicit => self.report(
+                            next,
+                            reporter.Level.ERROR,
+                            "cannot cast value of type {s} to {s}",
+                            .{ exp.t.?.str(), helperI64T.str() },
+                            true,
+                            true,
+                        ),
+                    }
+
+                    return SyntaxError.TypeError;
+                };
+
+                dimensions.append(dimension) catch unreachable;
+
+                self.alloc.free(newTSize);
+                newTSize = self.c.genLLVMNameEmpty();
+                self.c.emit(
+                    self.createString("{s} = mul i64 {s}, {s}", .{ newTSize, tSize, dimension }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.alloc.free(tSize);
+                tSize = self.createString("{s}", .{newTSize});
+            }
+
+            try self.consume(tt.RPAREN);
+
+            if (ptrT.array.dimensions > 0) {
+                self.alloc.free(newTSize);
+                newTSize = self.c.genLLVMNameEmpty();
+
+                self.c.emit(
+                    self.createString("{s} = add i64 {s}, {d}", .{ newTSize, tSize, ptrT.array.dimensions * 8 + 7 }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.alloc.free(tSize);
+                tSize = self.c.genLLVMNameEmpty();
+
+                self.c.emit(
+                    self.createString("{s} = and i64 {s}, -8", .{ tSize, newTSize }),
+                    self.c.lastBlockIndex(),
+                );
+            }
+
+            var place = self.c.genLLVMNameEmpty();
+            defer self.alloc.free(place);
+
+            self.c.emit(
+                self.createString("{s} = call ptr @malloc(i64 {s})", .{ place, tSize }),
+                self.c.lastBlockIndex(),
+            );
+
+            var newPointer = self.c.genLLVMNameEmpty();
+            defer self.alloc.free(newPointer);
+
+            for (dimensions.items) |d| {
+                self.c.emit(
+                    self.createString("store i64 {s}, ptr {s}", .{ d, place }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.alloc.free(newPointer);
+                newPointer = self.c.genLLVMNameEmpty();
+
+                self.c.emit(
+                    self.createString("{s} = getelementptr i64, ptr {s}, i64 1", .{ newPointer, place }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.alloc.free(place);
+                place = self.createString("{s}", .{newPointer});
+            }
+
+            return Expression{
+                .t = ptrT.clone(self.alloc),
+                .rValue = self.createString("{s}", .{place}),
+                .semiMustFollow = true,
+            };
+        }
+
+        self.report(
+            lparen,
+            reporter.Level.ERROR,
+            "1st argument of '@alloc' is {s} instead of array or pointer",
+            .{ptrT.str()},
+            true,
+            true,
+        );
+        return SyntaxError.TypeError;
+    }
+
+    fn parseBuiltinMalloc(self: *Parser) SyntaxError!Expression {
+        const lparen = try self.consumeGet(tt.LPAREN);
+
+        var exp = try self.parseI();
+        defer exp.destroy(self.alloc);
+
+        try self.consume(tt.RPAREN);
+
+        var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
+        defer helperI64T.destroy(self.alloc);
+
+        var size = self.convert(
+            exp.t.?,
+            helperI64T,
+            ConvMode.IMPLICIT,
+            exp.rValue.?,
+            self.c.lastBlockIndex(),
+        ) catch |err| {
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    lparen,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ exp.t.?.str(), helperI64T.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    lparen,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s}",
+                    .{ exp.t.?.str(), helperI64T.str() },
+                    true,
+                    true,
+                ),
+            }
+
+            return SyntaxError.TypeError;
+        };
+        defer self.alloc.free(size);
+
+        var result = self.c.genLLVMNameEmpty();
+        self.c.emit(self.createString("{s} = call ptr @malloc(i64 {s})", .{ result, size }), self.c.lastBlockIndex());
+
+        return Expression{
+            .t = types.Array.create(self.alloc, 0, types.SimpleType.create(self.alloc, types.SimpleType.U8)),
+            .rValue = result,
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinRealloc(self: *Parser) SyntaxError!Expression {
+        const lparen = try self.consumeGet(tt.LPAREN);
+
+        var exp = try self.parseExpression();
+        defer exp.destroy(self.alloc);
+
+        if (!exp.t.?.isArray() and !exp.t.?.isPointer()) {
+            self.report(
+                lparen,
+                reporter.Level.ERROR,
+                "expected either pointer or array but found {s} instead",
+                .{exp.t.?.str()},
+                true,
+                true,
+            );
+        }
+
+        const comma = try self.consumeGet(tt.COMMA);
+
+        var exp2 = try self.parseExpression();
+        defer exp2.destroy(self.alloc);
+
+        var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
+        defer helperI64T.destroy(self.alloc);
+
+        var size = self.convert(
+            exp2.t.?,
+            helperI64T,
+            ConvMode.IMPLICIT,
+            exp2.rValue.?,
+            self.c.lastBlockIndex(),
+        ) catch |err| {
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    comma,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ exp.t.?.str(), helperI64T.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    comma,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s}",
+                    .{ exp.t.?.str(), helperI64T.str() },
+                    true,
+                    true,
+                ),
+            }
+
+            return SyntaxError.TypeError;
+        };
+        defer self.alloc.free(size);
+
+        try self.consume(tt.RPAREN);
+
+        var result = self.c.genLLVMNameEmpty();
+        self.c.emit(
+            self.createString("{s} = call ptr @realloc(ptr {s}, i64 {s})", .{ result, exp.rValue.?, size }),
+            self.c.lastBlockIndex(),
+        );
+
+        return Expression{
+            .t = types.Array.create(self.alloc, 0, types.SimpleType.create(self.alloc, types.SimpleType.U8)),
+            .rValue = result,
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinFree(self: *Parser) SyntaxError!Expression {
+        const lparen = try self.consumeGet(tt.LPAREN);
+
+        var exp = try self.parseI();
+        defer exp.destroy(self.alloc);
+
+        if (!exp.t.?.isArray()) {
+            self.report(lparen, reporter.Level.ERROR, "cannot free {s}", .{exp.t.?.str()}, true, true);
+            return SyntaxError.TypeError;
+        }
+
+        try self.consume(tt.RPAREN);
+
+        var whatToFree: []const u8 = "";
+        defer self.alloc.free(whatToFree);
+
+        if (exp.t.?.array.dimensions > 0) {
+            whatToFree = self.c.genLLVMNameEmpty();
+            self.c.emit(
+                self.createString("{s} = getelementptr i64, ptr {s}, i64 {d}", .{
+                    whatToFree,
+                    exp.rValue.?,
+                    -@as(i128, @intCast(exp.t.?.array.dimensions)),
+                }),
+                self.c.lastBlockIndex(),
+            );
+        } else {
+            whatToFree = self.createString("{s}", .{exp.rValue.?});
+        }
+
+        self.c.emit(
+            self.createString("call void @free(ptr {s})", .{whatToFree}),
+            self.c.lastBlockIndex(),
+        );
+
+        return Expression{
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinSizeof(self: *Parser) SyntaxError!Expression {
+        try self.consume(tt.LPAREN);
+
+        var t = try self.parseType();
+        defer t.destroy(self.alloc);
+
+        try self.consume(tt.RPAREN);
+
+        return Expression{
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.I64),
+            .rValue = self.createString("{d}", .{types.SimpleType.width(t.simple)}),
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinLen(self: *Parser) SyntaxError!Expression {
+        const lparen = try self.consumeGet(tt.LPAREN);
+
+        var exp = try self.parseI();
+        defer exp.destroy(self.alloc);
+
+        if (!exp.t.?.isArray()) {
+            self.report(
+                lparen,
+                reporter.Level.ERROR,
+                "can get length of array only, not {s}",
+                .{exp.t.?.str()},
+                true,
+                true,
+            );
+
+            return SyntaxError.TypeError;
+        }
+
+        try self.consume(tt.RPAREN);
+
+        var result: []const u8 = "";
+        if (exp.t.?.array.dimensions > 0) {
+            var ptr = self.c.genLLVMNameEmpty();
+            defer self.alloc.free(ptr);
+
+            self.c.emit(
+                self.createString("{s} = getelementptr i64, ptr {s}, i64 {d}", .{
+                    ptr,
+                    exp.rValue.?,
+                    -@as(i128, @intCast(exp.t.?.array.dimensions)),
+                }),
+                self.c.lastBlockIndex(),
+            );
+
+            result = self.c.genLLVMNameEmpty();
+            self.c.emit(
+                self.createString("{s} = load i64, ptr {s}", .{ result, ptr }),
+                self.c.lastBlockIndex(),
+            );
+        } else {
+            result = self.createString("1", .{});
+        }
+
+        return Expression{
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.I64),
+            .rValue = result,
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinBitcast(self: *Parser) SyntaxError!Expression {
+        try self.consume(tt.LPAREN);
+
+        var t = try self.parseType();
+        defer t.destroy(self.alloc);
+
+        var comma = try self.consumeGet(tt.COMMA);
+
+        var exp = try self.parseExpression();
+        defer exp.destroy(self.alloc);
+
+        try self.consume(tt.RPAREN);
+
+        var result = self.convert(exp.t.?, t, ConvMode.BITCAST, exp.rValue.?, self.c.lastBlockIndex()) catch |err| {
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    comma,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ exp.t.?.str(), t.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    comma,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s}",
+                    .{ exp.t.?.str(), t.str() },
+                    true,
+                    true,
+                ),
+            }
+
+            return SyntaxError.TypeError;
+        };
+        return Expression{
+            .t = t.clone(self.alloc),
+            .rValue = result,
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinExit(self: *Parser) SyntaxError!Expression {
+        var lparen = try self.consumeGet(tt.LPAREN);
+
+        var exp = try self.parseI();
+        defer exp.destroy(self.alloc);
+
+        try self.consume(tt.RPAREN);
+
+        var helperI32T = types.SimpleType.create(self.alloc, types.SimpleType.I32);
+        defer helperI32T.destroy(self.alloc);
+
+        var result = self.convert(exp.t.?, helperI32T, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch |err| {
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    lparen,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ exp.t.?.str(), helperI32T.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    lparen,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s}",
+                    .{ exp.t.?.str(), helperI32T.str() },
+                    true,
+                    true,
+                ),
+            }
+
+            return SyntaxError.TypeError;
+        };
+        defer self.alloc.free(result);
+
+        self.c.emit(
+            self.createString("call void @exit(i32 {s})", .{result}),
+            self.c.lastBlockIndex(),
+        );
+
+        return Expression{
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .semiMustFollow = true,
+        };
     }
 
     fn parseFunctionCall(self: *Parser, ident: token.Token) SyntaxError!Expression {

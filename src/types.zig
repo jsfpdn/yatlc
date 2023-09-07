@@ -114,8 +114,7 @@ pub const Array = struct {
         // TODO: Format the string representation of array as `[-,-,-]<type>`.
         // This means that self.str() creates dynamically allocated string
         // therefore every call to self.str() must deallocate the string.
-        _ = self;
-        return "array";
+        return if (self.dimensions == 0) "pointer" else "array";
     }
 };
 
