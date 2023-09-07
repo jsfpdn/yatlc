@@ -1,8 +1,6 @@
 i32 helper() {
     bool a = false;
 
-    @print("helper");
-
     return 42;
 }
 
@@ -35,7 +33,6 @@ i64 main() {
     }
 
     i32 a = helper();
-    @print(a);
 
     helper3();
 

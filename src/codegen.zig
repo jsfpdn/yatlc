@@ -318,7 +318,7 @@ pub const CodeGen = struct {
     const customDecls =
         \\declare ptr @malloc(i64)
         \\declare i32 @getc(ptr)
-        \\declare ptr @__acrt_iob_func(i32)
+        // \\declare ptr @__acrt_iob_func(i32)
         \\declare ptr @realloc(ptr, i64)
         \\declare i32 @fputs(ptr, ptr)
         \\declare void @free(ptr)
@@ -326,6 +326,7 @@ pub const CodeGen = struct {
         \\
     ;
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
+        // _ = try writer.write(CodeGen.customDefines);
         _ = try writer.write(CodeGen.customDecls);
         _ = try writer.write("\n");
 
@@ -430,8 +431,8 @@ pub fn llvmAssignOp(t: types.Type, op: tokens.TokenType) []const u8 {
         tt.LSH_ASSIGN => return "shl",
         tt.RSH_ASSIGN => return if (t.isSigned()) "ashr" else "lshr",
         tt.AND_ASSIGN => return "and",
+        tt.OR_ASSIGN => return "or",
         tt.XOR_ASSIGN => return "xor",
-        tt.LOR_ASSIGN => return "or",
         else => {},
     }
 
@@ -493,6 +494,39 @@ pub fn llvmIntOp(op: tokens.TokenType) []const u8 {
         tt.MUL => "mul",
         tt.QUO => "div",
         tt.REM => "rem",
+        else => unreachable,
+    };
+}
+
+pub fn evalConstant(
+    op: tokens.TokenType,
+    lhs: []const u8,
+    rhs: []const u8,
+) !i128 {
+    const lhsInt = std.fmt.parseInt(i128, lhs, 0) catch unreachable;
+    const rhsInt = std.fmt.parseInt(i128, rhs, 0) catch unreachable;
+
+    return switch (op) {
+        tt.EQL => @intFromBool(lhsInt == rhsInt),
+        tt.LT => @intFromBool(lhsInt < rhsInt),
+        tt.GT => @intFromBool(lhsInt > rhsInt),
+        tt.NEQ => @intFromBool(lhsInt != rhsInt),
+        tt.LEQ => @intFromBool(lhsInt <= rhsInt),
+        tt.GEQ => @intFromBool(lhsInt >= rhsInt),
+
+        tt.ADD => lhsInt + rhsInt,
+        tt.SUB => lhsInt - rhsInt,
+        tt.MUL => lhsInt * rhsInt,
+        tt.QUO => if (rhsInt != 0) @divFloor(lhsInt, rhsInt) else error.DivisionByZero,
+        tt.REM => if (rhsInt != 0) @rem(lhsInt, rhsInt) else error.RemainderAfterZero,
+
+        // TODO: Figure out the shifts.
+        // tt.B_RSH => self.createString("{d}", .{lhsInt >> rhsInt}),
+        // tt.B_LSH => self.createString("{d}", .{lhsInt << rhsInt}),
+        tt.B_AND => lhsInt & rhsInt,
+        tt.B_OR => lhsInt | rhsInt,
+        tt.B_XOR => lhsInt ^ rhsInt,
+
         else => unreachable,
     };
 }

@@ -13,5 +13,8 @@ i32 main() {
 
     bool h = not h;
 
-    return @i32(0);
+    h &= h;
+    h |= h;
+
+    return 0;
 }

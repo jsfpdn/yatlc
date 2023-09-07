@@ -1,0 +1,12 @@
+i32 main() {
+    [-]u8 array = @malloc(10 * 8);
+
+    for (i32 i = 0, i < @len array, i++) {}
+
+    u8 tmp = array[1]+2;
+    u16 tmp2 = array[tmp];
+
+    array[3] = tmp;
+
+    return 0;
+}

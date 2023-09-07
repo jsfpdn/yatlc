@@ -153,9 +153,16 @@ pub fn main() !u8 {
     defer p.deinit();
     defer c.deinit();
 
-    p.parse() catch {};
+    p.parse() catch return 1;
 
-    const argv = &[_][]const u8{ opts.clangPath, "-Woverride-module", llvmFilename, "-o", opts.executable };
+    const argv = &[_][]const u8{
+        opts.clangPath,
+        "-Wno-override-module",
+        llvmFilename,
+        "-o",
+        opts.executable,
+        if (opts.verbose) "-v" else "",
+    };
     const result = std.process.Child.exec(.{
         .allocator = allocator,
         .argv = argv,
@@ -176,12 +183,10 @@ pub fn main() !u8 {
     }
 
     if (!std.mem.eql(u8, result.stderr, "")) {
-        io.getStdOut().writeAll("clang error:\n") catch unreachable;
         io.getStdOut().writeAll(result.stderr) catch unreachable;
         return 1;
     }
     if (!std.mem.eql(u8, result.stdout, "")) {
-        io.getStdOut().writeAll("clang output:\n") catch unreachable;
         io.getStdOut().writeAll(result.stdout) catch unreachable;
     }
 

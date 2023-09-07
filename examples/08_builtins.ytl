@@ -1,0 +1,17 @@
+i32 main() {
+    []i32 a = @alloc([]i32);
+    [-,-]i32 b = @alloc([-,-]i32, 10, 20);
+    []u8 c = @malloc(128);
+
+    c = @realloc(c, 256);
+
+    @free(b);
+
+    i64 d = @sizeof(i32);
+
+    i64 e = @len(b);
+
+    @exit(10);
+
+    return 0;
+}

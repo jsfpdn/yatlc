@@ -24,8 +24,6 @@ pub const Expression = struct {
     semiMustFollow: bool = false,
     endsWithReturn: bool = false,
 
-    callsFunction: bool = false,
-
     pub fn destroy(self: Expression, alloc: std.mem.Allocator) void {
         if (self.t) |t| t.destroy(alloc);
         if (self.lt) |lt| lt.destroy(alloc);
@@ -59,7 +57,6 @@ pub const Expression = struct {
             .lValueComputed = self.lValueComputed,
             .semiMustFollow = self.semiMustFollow,
             .endsWithReturn = self.endsWithReturn,
-            .callsFunction = self.callsFunction,
         };
 
         if (self.rValue) |rv| exp.rValue = std.fmt.allocPrint(alloc, "{s}", .{rv}) catch unreachable;
@@ -87,9 +84,6 @@ pub const Parser = struct {
     // TODO:
     // * constant folding
     // * IR emitter
-    //      * handling multiple functions
-    //      * function arguments
-    //      * function calls
     //      * '\n' ~> '\0A' in strings when printing
 
     pub fn init(
@@ -171,11 +165,6 @@ pub const Parser = struct {
                 var exp = try self.parseSubExpression();
                 defer exp.destroy(self.alloc);
 
-                if (exp.callsFunction) {
-                    self.report(next, reporter.Level.ERROR, "global constant definition cannot call a function", .{}, true, true);
-                    return SyntaxError.TypeError;
-                }
-
                 const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
                     switch (err) {
                         ConvErr.Overflow => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ exp.t.?.str(), t.str() }, true, true),
@@ -209,12 +198,12 @@ pub const Parser = struct {
                     .defined = false,
                 };
 
-                const sig = codegen.signature(self.alloc, llvmFuncName, ft.func.args, t.*);
-                self.c.emitA(sig);
-
                 // Try to parse the function body if it is a function definition.
                 next = self.s.peek();
                 if (next.tokenType == tt.LBRACE) {
+                    const sig = codegen.signature(self.alloc, llvmFuncName, ft.func.args, t.*);
+                    self.c.emitA(sig);
+
                     self.c.emitInit(std.fmt.allocPrint(self.alloc, "{{", .{}) catch unreachable);
                     // Open a new scope just for the function arguments. This way,
                     // arguments can be shadowed in the function body.
@@ -271,7 +260,6 @@ pub const Parser = struct {
                     defer exp.destroy(self.alloc);
 
                     if (!exp.endsWithReturn) {
-                        // TODO: Fix endsWithReturn synthesized attribute?
                         if (self.returnType.?.isUnit()) {
                             self.c.emit(
                                 std.fmt.allocPrint(self.alloc, "ret void", .{}) catch unreachable,
@@ -384,6 +372,7 @@ pub const Parser = struct {
                 .t = try self.parseType(),
                 .defined = true,
             };
+            errdefer s.t.destroy(self.alloc);
 
             if (argNames == argNamesE.Unnamed or
                 ((self.s.peek().tokenType == tt.COMMA or self.s.peek().tokenType == tt.RPAREN) and argNames == argNamesE.DoNotKnow))
@@ -393,7 +382,13 @@ pub const Parser = struct {
                 s.llvmName = std.fmt.allocPrint(self.alloc, "TBD", .{}) catch unreachable;
             } else {
                 argNames = argNamesE.Named;
+
                 const id = try self.consumeGet(tt.IDENT);
+                if (types.startsType(id.symbol)) {
+                    self.report(id, reporter.Level.ERROR, "function argument cannot be named as a type", .{}, true, true);
+                    return SyntaxError.TypeError;
+                }
+
                 s.name = id.symbol;
                 s.llvmName = self.c.genLLVMName(id.symbol);
                 s.location = id;
@@ -570,8 +565,6 @@ pub const Parser = struct {
         var body = try self.parseBody();
         defer body.destroy(self.alloc);
 
-        var callsFunction = body.callsFunction or ifExp.callsFunction;
-
         if (self.s.peek().tokenType != tt.ELSE) {
             self.c.emit(self.createString("br label {s}", .{elseBlockName}), self.c.lastBlockIndex());
             self.c.emitBlock(elseBlockName);
@@ -581,7 +574,6 @@ pub const Parser = struct {
                 .endsWithReturn = false,
                 .semiMustFollow = false,
                 .hasLValue = false,
-                .callsFunction = callsFunction,
             };
         }
 
@@ -602,13 +594,11 @@ pub const Parser = struct {
             defer anotherIfExp.destroy(self.alloc);
 
             c = anotherIfExp.endsWithReturn;
-            callsFunction = callsFunction or anotherIfExp.callsFunction;
         } else {
             var anotherBody = try self.parseBody();
             defer anotherBody.destroy(self.alloc);
 
             c = anotherBody.endsWithReturn;
-            callsFunction = callsFunction or anotherBody.callsFunction;
         }
 
         if (b and c) {
@@ -617,7 +607,6 @@ pub const Parser = struct {
                 .endsWithReturn = true,
                 .semiMustFollow = false,
                 .hasLValue = false,
-                .callsFunction = callsFunction,
             };
         }
 
@@ -632,12 +621,10 @@ pub const Parser = struct {
             .endsWithReturn = false,
             .semiMustFollow = false,
             .hasLValue = false,
-            .callsFunction = callsFunction,
         };
     }
 
     fn parseFor(self: *Parser) SyntaxError!Expression {
-        // TODO: Decide whether to allow loops such as `for (,,) {...}`.
         self.st.open() catch unreachable;
         defer self.st.close();
 
@@ -720,7 +707,6 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
-            .callsFunction = body.callsFunction or stepExp.callsFunction or condExp.callsFunction or initExp.callsFunction,
         };
     }
 
@@ -784,7 +770,6 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
-            .callsFunction = body.callsFunction or exp.callsFunction,
         };
     }
 
@@ -800,6 +785,7 @@ pub const Parser = struct {
         defer self.alloc.free(endBlockName);
 
         var bodyCallsFunction = false;
+        _ = bodyCallsFunction;
         {
             // Lexical scope to leverage defers to pop labels immediately after parsing the body.
 
@@ -817,8 +803,6 @@ pub const Parser = struct {
 
             var body = try self.parseBody();
             defer body.destroy(self.alloc);
-
-            bodyCallsFunction = body.callsFunction;
 
             self.c.emit(
                 std.fmt.allocPrint(self.alloc, "br label {s}", .{condBlockName}) catch unreachable,
@@ -854,7 +838,6 @@ pub const Parser = struct {
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
-            .callsFunction = exp.callsFunction or bodyCallsFunction,
         };
     }
 
@@ -964,7 +947,6 @@ pub const Parser = struct {
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                     .endsWithReturn = true,
                     .semiMustFollow = true,
-                    .callsFunction = retExp.callsFunction,
                 };
             },
         };
@@ -1038,6 +1020,10 @@ pub const Parser = struct {
             defer identType.?.destroy(self.alloc);
 
             identTok = try self.consumeGet(tt.IDENT);
+            if (types.startsType(identTok.?.symbol)) {
+                self.report(identTok.?, reporter.Level.ERROR, "variable cannot be named as a type", .{}, true, true);
+                return SyntaxError.TypeError;
+            }
 
             var llvmName = try self.declare(identTok.?.symbol, identType.?, identTok.?, false);
             errdefer self.alloc.free(llvmName);
@@ -1067,7 +1053,6 @@ pub const Parser = struct {
             }
         } else {
             declaration = false;
-            // TODO: Bus error here?
             exp = try self.parseTernaryExpression();
         }
 
@@ -1132,7 +1117,6 @@ pub const Parser = struct {
                 // exp.lValue does not change.
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
-                exp.callsFunction = exp.callsFunction or subExp.callsFunction;
             },
             tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
                 self.consume(assignTok.tokenType) catch unreachable;
@@ -1183,7 +1167,6 @@ pub const Parser = struct {
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
-                exp.callsFunction = exp.callsFunction or rhsExp.callsFunction;
             },
             // Assignments:tt.LAND_ASSIGN and tt.LOR_ASSIGN are special due to the fact that they are lazily evaluated.
             tt.LAND_ASSIGN, tt.LOR_ASSIGN => {
@@ -1193,7 +1176,7 @@ pub const Parser = struct {
                     self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.?.str() }, true, true);
                     return SyntaxError.TypeError;
                 }
-                // TODO: Destroy type of either rhsExp or exp.
+
                 var rhsExp = try self.parseSubExpression();
                 defer rhsExp.destroy(self.alloc);
 
@@ -1208,7 +1191,6 @@ pub const Parser = struct {
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
-                exp.callsFunction = exp.callsFunction or rhsExp.callsFunction;
             },
             else => @panic("ICE: exhausted all the possible assignments"),
         }
@@ -1291,7 +1273,6 @@ pub const Parser = struct {
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
-                exp.callsFunction = exp.callsFunction or exp2.callsFunction or exp3.callsFunction;
                 break :blk exp;
             },
             tt.QUESTION_MARK => blk: {
@@ -1416,7 +1397,6 @@ pub const Parser = struct {
                 // TODO: exp.lValue = ...
                 exp.semiMustFollow = true;
                 exp.endsWithReturn = false;
-                exp.callsFunction = exp.callsFunction or exp2.callsFunction or exp3.callsFunction;
 
                 break :blk exp;
             },
@@ -1480,8 +1460,6 @@ pub const Parser = struct {
                             return SyntaxError.TypeError;
                         }
 
-                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
-
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
                     } else {
@@ -1515,8 +1493,6 @@ pub const Parser = struct {
 
                         var nExp = try self.parseNot();
                         defer nExp.destroy(self.alloc);
-
-                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
@@ -1598,8 +1574,6 @@ pub const Parser = struct {
                             return SyntaxError.TypeError;
                         }
 
-                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
-
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
                     } else {
@@ -1633,8 +1607,6 @@ pub const Parser = struct {
 
                         var nExp = try self.parseNot();
                         defer nExp.destroy(self.alloc);
-
-                        exp.callsFunction = exp.callsFunction or nExp.callsFunction;
 
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
@@ -1707,8 +1679,6 @@ pub const Parser = struct {
                     var nExp = try self.parseNot();
                     defer nExp.destroy(self.alloc);
 
-                    exp.callsFunction = exp.callsFunction or nExp.callsFunction;
-
                     if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
                         self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
                         return SyntaxError.TypeError;
@@ -1736,7 +1706,6 @@ pub const Parser = struct {
                         .hasLValue = false,
                         .semiMustFollow = true,
                         .endsWithReturn = false,
-                        .callsFunction = exp.callsFunction,
                     };
                 },
             }
@@ -1870,7 +1839,10 @@ pub const Parser = struct {
                 },
                 types.TypeTag.constant => {
                     if (result) |res| self.alloc.free(res);
-                    result = self.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?);
+                    result = self.createString("{d}", .{
+                        // We can safely `catch unreachable` since evalConstant throws error only for divison and remainder.
+                        codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch unreachable,
+                    });
                 },
                 types.TypeTag.array => {
                     if (result) |res| self.alloc.free(res);
@@ -1909,7 +1881,6 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.destroy(self.alloc);
             xExp = yExp.clone(self.alloc);
-            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         xExp.t.?.destroy(self.alloc);
@@ -1962,15 +1933,15 @@ pub const Parser = struct {
                 return SyntaxError.TypeError;
             }
 
-            if ((t.equals(types.Type{ .simple = types.SimpleType.DOUBLE }) or t.equals(types.Type{ .simple = types.SimpleType.FLOAT })) and (op.tokenType != tt.ADD or op.tokenType != tt.SUB)) {
+            if ((t.equals(types.Type{ .simple = types.SimpleType.DOUBLE }) or t.equals(types.Type{ .simple = types.SimpleType.FLOAT })) and (op.tokenType != tt.ADD and op.tokenType != tt.SUB)) {
                 self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
                 return SyntaxError.TypeError;
             }
 
             if (t.isConstant()) {
-                var a = self.evalConstant(op.tokenType, xExp.lValue.?, yExp.lValue.?);
-                self.alloc.free(a);
-                // TODO: Set expression attributes.
+                // We can safely `catch unreachable` since evalConstant throws error only for divison and remainder.
+                t.constant.value = codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch unreachable;
+                result = self.createString("{d}", .{t.constant.value});
             } else {
                 const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
@@ -2010,7 +1981,6 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.t.?.destroy(self.alloc);
             xExp.t = t;
-            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         xExp.destroyRValue(self.alloc);
@@ -2164,24 +2134,17 @@ pub const Parser = struct {
                 self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
                 return SyntaxError.TypeError;
             };
+            errdefer t.destroy(self.alloc);
 
             if (t.isConstant()) {
-                // TODO: The actual value of the constant is not stored in the type anymore
-                // but MUST be in the expression itself.
-                // t.constant.int = switch (op.tokenType) {
-                //     tt.MUL => xExp.t.constant.int * yExp.t.constant.int,
-                //     tt.QUO => if (yExp.t.constant.int == 0) blk: {
-                //         self.report(tok, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true);
-                //         // Instead of dividing, just return dummy value 1 to continue with the parsing.
-                //         break :blk 1;
-                //     } else @divExact(xExp.t.constant.int, yExp.t.constant.int),
-                //     tt.REM => if (yExp.t.constant.int == 0) blk: {
-                //         self.report(tok, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true);
-                //         // Instead of dividing, just return dummy value 1 to continue with the parsing.
-                //         break :blk 1;
-                //     } else @rem(xExp.t.constant.int, yExp.t.constant.int),
-                //     else => unreachable,
-                // };
+                t.constant.value = codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch |err| {
+                    switch (err) {
+                        error.DivisionByZero => self.report(op, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true),
+                        error.RemainderAfterZero => self.report(op, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true),
+                    }
+
+                    return SyntaxError.TypeError;
+                };
             } else {
                 const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
                     // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
@@ -2203,10 +2166,6 @@ pub const Parser = struct {
                 };
                 defer self.alloc.free(valY);
 
-                // TODO: Emit IR depending on the operation and expression type.
-                // Watch out, this is more convoluted - unary minus can be done on u8, u16 and u32,
-                // resulting in i16, i32 and i64, respectively. Unary minus cannot be applied on u64
-                // since there is no i128.
                 if (result) |res| self.alloc.free(res);
                 result = self.c.genLLVMNameEmpty();
 
@@ -2236,7 +2195,6 @@ pub const Parser = struct {
             // Replace the type of the expression with the new supertype.
             xExp.t.?.destroy(self.alloc);
             xExp.t = t;
-            xExp.callsFunction = xExp.callsFunction or yExp.callsFunction;
         }
 
         xExp.destroyLValue(self.alloc);
@@ -2344,11 +2302,23 @@ pub const Parser = struct {
                             exp.t.?.destroy(self.alloc);
                             break :blk ofType;
                         };
-                        exp.hasLValue = true;
 
-                        if (exp.lValue) |lv| self.alloc.free(lv);
+                        exp.destroyLValue(self.alloc);
+                        exp.hasLValue = true;
                         exp.lValue = self.createString("{s}", .{exp.rValue.?});
-                        // TODO: exp.rValue = name of the load instruction.
+
+                        var result1 = self.c.genLLVMNameEmpty();
+                        self.c.emit(
+                            self.createString("{s} = load {s}, ptr {s}", .{
+                                result1,
+                                codegen.llvmType(exp.t.?.*),
+                                exp.rValue.?,
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
+
+                        exp.destroyRValue(self.alloc);
+                        exp.rValue = result1;
 
                         exp.semiMustFollow = true;
                         exp.endsWithReturn = false;
@@ -2902,12 +2872,10 @@ pub const Parser = struct {
     }
 
     fn parseBuiltinMalloc(self: *Parser) SyntaxError!Expression {
-        const lparen = try self.consumeGet(tt.LPAREN);
+        var next = self.s.peek();
 
         var exp = try self.parseI();
         defer exp.destroy(self.alloc);
-
-        try self.consume(tt.RPAREN);
 
         var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
         defer helperI64T.destroy(self.alloc);
@@ -2921,7 +2889,7 @@ pub const Parser = struct {
         ) catch |err| {
             switch (err) {
                 ConvErr.Overflow => self.report(
-                    lparen,
+                    next,
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s} due to possible overflow",
                     .{ exp.t.?.str(), helperI64T.str() },
@@ -2929,7 +2897,7 @@ pub const Parser = struct {
                     true,
                 ),
                 ConvErr.NoImplicit => self.report(
-                    lparen,
+                    next,
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s}",
                     .{ exp.t.?.str(), helperI64T.str() },
@@ -3023,17 +2991,15 @@ pub const Parser = struct {
     }
 
     fn parseBuiltinFree(self: *Parser) SyntaxError!Expression {
-        const lparen = try self.consumeGet(tt.LPAREN);
+        var next = self.s.peek();
 
         var exp = try self.parseI();
         defer exp.destroy(self.alloc);
 
         if (!exp.t.?.isArray()) {
-            self.report(lparen, reporter.Level.ERROR, "cannot free {s}", .{exp.t.?.str()}, true, true);
+            self.report(next, reporter.Level.ERROR, "cannot free {s}", .{exp.t.?.str()}, true, true);
             return SyntaxError.TypeError;
         }
-
-        try self.consume(tt.RPAREN);
 
         var whatToFree: []const u8 = "";
         defer self.alloc.free(whatToFree);
@@ -3079,14 +3045,14 @@ pub const Parser = struct {
     }
 
     fn parseBuiltinLen(self: *Parser) SyntaxError!Expression {
-        const lparen = try self.consumeGet(tt.LPAREN);
+        var next = self.s.peek();
 
         var exp = try self.parseI();
         defer exp.destroy(self.alloc);
 
         if (!exp.t.?.isArray()) {
             self.report(
-                lparen,
+                next,
                 reporter.Level.ERROR,
                 "can get length of array only, not {s}",
                 .{exp.t.?.str()},
@@ -3096,8 +3062,6 @@ pub const Parser = struct {
 
             return SyntaxError.TypeError;
         }
-
-        try self.consume(tt.RPAREN);
 
         var result: []const u8 = "";
         if (exp.t.?.array.dimensions > 0) {
@@ -3172,12 +3136,10 @@ pub const Parser = struct {
     }
 
     fn parseBuiltinExit(self: *Parser) SyntaxError!Expression {
-        var lparen = try self.consumeGet(tt.LPAREN);
+        var next = self.s.peek();
 
         var exp = try self.parseI();
         defer exp.destroy(self.alloc);
-
-        try self.consume(tt.RPAREN);
 
         var helperI32T = types.SimpleType.create(self.alloc, types.SimpleType.I32);
         defer helperI32T.destroy(self.alloc);
@@ -3185,7 +3147,7 @@ pub const Parser = struct {
         var result = self.convert(exp.t.?, helperI32T, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch |err| {
             switch (err) {
                 ConvErr.Overflow => self.report(
-                    lparen,
+                    next,
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s} due to possible overflow",
                     .{ exp.t.?.str(), helperI32T.str() },
@@ -3193,7 +3155,7 @@ pub const Parser = struct {
                     true,
                 ),
                 ConvErr.NoImplicit => self.report(
-                    lparen,
+                    next,
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s}",
                     .{ exp.t.?.str(), helperI32T.str() },
@@ -3218,9 +3180,6 @@ pub const Parser = struct {
     }
 
     fn parseFunctionCall(self: *Parser, ident: token.Token) SyntaxError!Expression {
-        // TODO: What if we parsed all the arguments first until we reach ')' and then
-        // type check and emit? This way, we'll get friendlier error reporting when
-        // the function call has wrong number of arguments.
         try self.consume(tt.LPAREN);
 
         var funcSymbol = self.st.get(ident.symbol) orelse unreachable;
@@ -3284,7 +3243,6 @@ pub const Parser = struct {
             .hasLValue = false,
             .semiMustFollow = true,
             .endsWithReturn = false,
-            .callsFunction = true,
         };
 
         var funcCall = codegen.funcCall(
@@ -4074,39 +4032,6 @@ pub const Parser = struct {
         );
 
         return result;
-    }
-
-    fn evalConstant(
-        self: *Parser,
-        op: token.TokenType,
-        lhs: []const u8,
-        rhs: []const u8,
-    ) []const u8 {
-        const lhsInt = std.fmt.parseInt(i128, lhs, 0) catch unreachable;
-        const rhsInt = std.fmt.parseInt(i128, rhs, 0) catch unreachable;
-
-        return switch (op) {
-            tt.EQL => if (lhsInt == rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            tt.LT => if (lhsInt < rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            tt.GT => if (lhsInt > rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            tt.NEQ => if (lhsInt != rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            tt.LEQ => if (lhsInt <= rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            tt.GEQ => if (lhsInt >= rhsInt) self.createString("1", .{}) else self.createString("0", .{}),
-            else => unreachable,
-        };
-
-        // t.constant.int = switch (op.tokenType) {
-        //     tt.ADD => xExp.t.constant.int + yExp.t.constant.int,
-        //     tt.SUB => xExp.t.constant.int - yExp.t.constant.int,
-        //     // TODO: i128 << i128 and i128 >> i128 overflows, figure out wrapping around?
-        //     // compiler error: error: expected type 'u7', found 'i128'
-        //     // tt.B_RSH => xExp.t.constant.int >> yExp.t.constant.int,
-        //     // tt.B_LSH => xExp.t.constant.int << yExp.t.constant.int,
-        //     tt.B_AND => xExp.t.constant.int & yExp.t.constant.int,
-        //     tt.B_OR => xExp.t.constant.int | yExp.t.constant.int,
-        //     tt.B_XOR => xExp.t.constant.int ^ yExp.t.constant.int,
-        //     else => unreachable,
-
     }
 
     fn createString(self: *Parser, comptime fmt: []const u8, args: anytype) []const u8 {
