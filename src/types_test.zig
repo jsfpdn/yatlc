@@ -25,10 +25,9 @@ test "test finding supertypes" {
             .snd = t.Array.create(std.testing.allocator, 1, t.SimpleType.create(std.testing.allocator, t.SimpleType.U8)),
         },
         .{
-            .name = "[-]+[]=>[-]",
+            .name = "[-]+[]=>null",
             .fst = t.Array.create(std.testing.allocator, 1, t.SimpleType.create(std.testing.allocator, t.SimpleType.U8)),
             .snd = t.Array.create(std.testing.allocator, 0, t.SimpleType.create(std.testing.allocator, t.SimpleType.U8)),
-            .want = t.Array.create(std.testing.allocator, 1, t.SimpleType.create(std.testing.allocator, t.SimpleType.U8)),
         },
 
         .{
@@ -78,7 +77,7 @@ pub fn expectEqualDeep(want: *t.Type, got: *t.Type) !void {
     std.testing.expectEqual(@intFromEnum(want.*), @intFromEnum(got.*)) catch return testErrors.ExpectedEqual;
     switch (want.*) {
         t.TypeTag.simple => |wantS| std.testing.expectEqual(wantS, got.simple) catch return testErrors.ExpectedEqual,
-        t.TypeTag.constant => return,
+        t.TypeTag.constant, t.TypeTag.pointer => return,
         t.TypeTag.array => |wantA| {
             std.testing.expectEqual(wantA.dimensions, got.array.dimensions) catch return testErrors.ExpectedEqual;
             try expectEqualDeep(wantA.ofType, got.array.ofType);

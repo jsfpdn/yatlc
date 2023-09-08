@@ -2574,10 +2574,9 @@ pub const Parser = struct {
             tt.C_NULL => {
                 self.consume(tt.C_NULL) catch unreachable;
 
-                // TODO: What type should the array carry if we're talking about nulls?
                 return Expression{
-                    .t = types.Array.create(self.alloc, 0, types.SimpleType.create(self.alloc, types.SimpleType.UNIT)),
-                    .lt = types.Array.create(self.alloc, 0, types.SimpleType.create(self.alloc, types.SimpleType.UNIT)),
+                    .t = types.Type.createPointer(self.alloc),
+                    .lt = types.Type.createPointer(self.alloc),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -3388,6 +3387,9 @@ pub const Parser = struct {
             return result;
         }
 
+        // TODO: from.isPointer should be true when from is helper pointer type,
+        // isArray is true when it is not helper pointer type and dimensions >= 0.
+        // TODO: https://ziglang.org/documentation/master/std/#A;std:mem.Allocator.dupe to copy strings?
         if (from.isPointer()) {
             if (to.isArray()) {
                 self.alloc.free(result);

@@ -111,10 +111,11 @@ pub const Array = struct {
     }
 
     fn str(self: Array) []const u8 {
+        _ = self;
         // TODO: Format the string representation of array as `[-,-,-]<type>`.
         // This means that self.str() creates dynamically allocated string
         // therefore every call to self.str() must deallocate the string.
-        return if (self.dimensions == 0) "pointer" else "array";
+        return "array";
     }
 };
 
@@ -170,6 +171,7 @@ pub const TypeTag = enum(u8) {
     array,
     func,
     constant,
+    pointer,
 };
 
 pub const Type = union(TypeTag) {
@@ -177,6 +179,13 @@ pub const Type = union(TypeTag) {
     constant: Constant,
     array: Array,
     func: Func,
+    pointer: bool,
+
+    pub fn createPointer(alloc: std.mem.Allocator) *Type {
+        var t = alloc.create(Type) catch unreachable;
+        t.* = Type{ .pointer = true };
+        return t;
+    }
 
     pub fn destroy(self: *Type, alloc: std.mem.Allocator) void {
         switch (self.*) {
@@ -191,6 +200,7 @@ pub const Type = union(TypeTag) {
         var t = alloc.create(Type) catch unreachable;
         t.* = switch (self.*) {
             TypeTag.simple => |simple| Type{ .simple = simple },
+            TypeTag.pointer => Type{ .pointer = true },
             TypeTag.constant => |constant| Type{ .constant = Constant{ .value = constant.value } },
             TypeTag.array => |array| Type{ .array = Array{
                 .alloc = array.alloc,
@@ -216,7 +226,7 @@ pub const Type = union(TypeTag) {
 
         return switch (self) {
             TypeTag.simple => |simple| simple == other.simple,
-            TypeTag.constant => true,
+            TypeTag.constant, TypeTag.pointer => true,
             TypeTag.array => |array| array.dimensions == other.array.dimensions and array.ofType.equals(other.array.ofType.*),
             TypeTag.func => |func| blk: {
                 if (func.args.items.len != other.func.args.items.len or func.namedParams != other.func.namedParams or !func.retT.equals(other.func.retT.*))
@@ -232,14 +242,14 @@ pub const Type = union(TypeTag) {
 
     pub fn isArray(self: Type) bool {
         return switch (self) {
-            TypeTag.array => |array| array.dimensions >= 1,
+            TypeTag.array => true,
             else => false,
         };
     }
 
     pub fn isPointer(self: Type) bool {
         return switch (self) {
-            TypeTag.array => |array| array.dimensions == 0,
+            TypeTag.pointer => true,
             else => false,
         };
     }
@@ -315,6 +325,7 @@ pub const Type = union(TypeTag) {
             TypeTag.array => |a| a.str(),
             TypeTag.func => "function",
             TypeTag.constant => "constant",
+            TypeTag.pointer => "pointer",
         };
     }
 };
@@ -326,6 +337,11 @@ pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type
     if (fst.equals(snd.*)) return fst.clone(alloc);
     if (fst.isUnit() or snd.isUnit()) return null;
     if (fst.isBool() or snd.isBool()) return null;
+    if (fst.isPointer()) {
+        if (snd.isArray()) return snd.clone(alloc);
+        return null;
+    }
+
     if (snd.isPointer()) {
         if (fst.isArray()) return fst.clone(alloc);
         return null;
