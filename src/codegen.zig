@@ -233,14 +233,17 @@ pub const CodeGen = struct {
     }
 
     const customDefines =
+        \\@__stdinp = external global ptr
+        \\@__stdoutp = external global ptr
+        \\
         \\define i64 @my_len(ptr %x0) {
         \\  %x1 = getelementptr i64, ptr %x0, i64 -1
         \\  %x2 = load i64, ptr %x1
         \\  ret i64 %x2
         \\}
         \\define void @my_print(ptr %x0) {
-        \\  %x1 = call ptr @__acrt_iob_func(i32 1)
-        \\  %x2 = call i32 @fputs(ptr %x0, ptr %x1)
+        \\  %x1 = load ptr, ptr @__stdoutp
+        \\  %x2 = call i32 @"\01_fputs"(ptr %x0, ptr %x1)
         \\  ret void
         \\}
         \\define void @my_stringFree(ptr %x0) {
@@ -262,7 +265,7 @@ pub const CodeGen = struct {
         \\  store i64 8, ptr %x4
         \\  br label %x8
         \\x8:
-        \\  %x9 = call ptr @__acrt_iob_func(i32 0)
+        \\  %x9 = load ptr, ptr @__stdinp
         \\  %x10 = call i32 @getc(ptr %x9)
         \\  %x11 = trunc i32 %x10 to i8
         \\  store i8 %x11, ptr %x5
@@ -312,21 +315,20 @@ pub const CodeGen = struct {
         \\  %x44 = getelementptr i8, ptr %x43, i64 8
         \\  ret ptr %x44
         \\}
-        \\
     ;
 
     const customDecls =
+        \\declare ptr @realloc(ptr, i64)
         \\declare ptr @malloc(i64)
         \\declare i32 @getc(ptr)
-        // \\declare ptr @__acrt_iob_func(i32)
-        \\declare ptr @realloc(ptr, i64)
+        \\declare i32 @"\01_fputs"(ptr, ptr)
         \\declare i32 @fputs(ptr, ptr)
         \\declare void @free(ptr)
-        \\declare void @exit(i32 noundef)
+        \\declare void @exit(i32)
         \\
     ;
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
-        // _ = try writer.write(CodeGen.customDefines);
+        _ = try writer.write(CodeGen.customDefines);
         _ = try writer.write(CodeGen.customDecls);
         _ = try writer.write("\n");
 

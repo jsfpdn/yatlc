@@ -11,7 +11,9 @@ i32 main() {
 
     i64 e = @len(b);
 
-    @exit(10);
+    [-]u8 user_input = @readln();
+    @print(user_input);
 
+    @exit(10);
     return 0;
 }

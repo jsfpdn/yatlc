@@ -86,7 +86,6 @@ pub const Parser = struct {
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
     // * self.alloc.dupe to copy strings
-    // * test array indexing
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
 
@@ -2665,15 +2664,49 @@ pub const Parser = struct {
                 };
             },
             tt.C_STRING => {
-                const string = self.consumeGet(tt.C_STRING) catch unreachable;
-                _ = string;
-                // TODO: Emit IR to store the string.
-                // TODO: Set expression attributes.
+                const tmp = self.consumeGet(tt.C_STRING) catch unreachable;
+                const string = tmp.symbol[1 .. tmp.symbol.len - 1];
+                const length = string.len;
+
+                var place = self.c.genLLVMNameEmpty();
+                defer self.alloc.free(place);
+
+                self.c.emitInit(self.createString("{s} = alloca [ {d} x i64 ]", .{
+                    place,
+                    @divFloor(length + 8, 8) + 1,
+                }));
+
+                self.c.emitInit(self.createString("store i64 {d}, ptr {s}", .{ length, place }));
+
+                var result = self.c.genLLVMNameEmpty();
+                self.c.emitInit(self.createString("{s} = getelementptr i64, ptr {s}, i64 1", .{ result, place }));
+
+                if (length == 0) {
+                    self.c.emitInit(self.createString("store i8 0, ptr {s}", .{result}));
+                } else {
+                    var stringStr = self.createString("i8 {d}", .{string[0]});
+                    defer self.alloc.free(stringStr);
+
+                    for (string[1..length]) |char| {
+                        var n = self.createString("{s}, i8 {d}", .{ stringStr, char });
+                        self.alloc.free(stringStr);
+                        stringStr = n;
+                    }
+
+                    var n = self.createString("{s}, i8 0", .{stringStr});
+                    self.alloc.free(stringStr);
+                    stringStr = n;
+
+                    self.c.emitInit(self.createString(
+                        "store [ {d} x i8 ] [ {s} ], ptr {s}",
+                        .{ length + 1, stringStr, result },
+                    ));
+                }
+
                 return Expression{
                     .t = types.Array.create(self.alloc, 1, types.SimpleType.create(self.alloc, types.SimpleType.U8)),
-                    .hasLValue = false,
+                    .rValue = result,
                     .semiMustFollow = true,
-                    .endsWithReturn = false,
                 };
             },
             else => {
@@ -2720,8 +2753,9 @@ pub const Parser = struct {
             tt.FREE => self.parseBuiltinFree(),
             tt.SIZEOF => self.parseBuiltinSizeof(),
             tt.LEN => self.parseBuiltinLen(),
-            tt.PRINT, tt.PRINTLN => @panic("TODO: Implement print/println"),
-            tt.READLN => @panic("TODO: Implement readln"),
+            tt.PRINT => self.parseBuiltinPrint(),
+            tt.PRINTLN => @panic("TODO: Implement me!"),
+            tt.READLN => self.parseBuiltinReadln(),
             tt.BITCAST => self.parseBuiltinBitcast(),
             tt.EXIT => self.parseBuiltinExit(),
             else => unreachable,
@@ -3006,6 +3040,47 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.I64),
+            .rValue = result,
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinPrint(self: *Parser) SyntaxError!Expression {
+        const loc = self.s.peek();
+        var exp = try self.parseI();
+        defer exp.destroy(self.alloc);
+
+        if (!exp.t.?.isArray()) {
+            self.report(
+                loc,
+                reporter.Level.ERROR,
+                "only characters and strings can be printed, not '{s}",
+                .{exp.t.?.str()},
+            );
+            return SyntaxError.TypeError;
+        }
+
+        self.c.emit(
+            self.createString("call void @my_print(ptr {s})", .{exp.rValue.?}),
+            self.c.lastBlockIndex(),
+        );
+
+        return Expression{
+            .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .semiMustFollow = true,
+        };
+    }
+
+    fn parseBuiltinReadln(self: *Parser) SyntaxError!Expression {
+        try self.consume(tt.LPAREN);
+        try self.consume(tt.RPAREN);
+
+        var result = self.c.genLLVMNameEmpty();
+
+        self.c.emit(self.createString("{s} = call ptr @my_readLine()", .{result}), self.c.lastBlockIndex());
+
+        return Expression{
+            .t = types.Array.create(self.alloc, 1, types.SimpleType.create(self.alloc, types.SimpleType.U8)),
             .rValue = result,
             .semiMustFollow = true,
         };
