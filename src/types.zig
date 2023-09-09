@@ -395,8 +395,8 @@ pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type
     return switch (fst.simple) {
         SimpleType.U64 => null,
         SimpleType.U32 => SimpleType.create(alloc, SimpleType.I64),
-        SimpleType.U16 => SimpleType.create(alloc, SimpleType.I64),
-        SimpleType.U8 => SimpleType.create(alloc, SimpleType.I64),
+        SimpleType.U16 => SimpleType.create(alloc, SimpleType.I32),
+        SimpleType.U8 => SimpleType.create(alloc, SimpleType.I16),
         else => unreachable,
     };
 }

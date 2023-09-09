@@ -87,6 +87,7 @@ pub const Parser = struct {
     //   simplify asserts to just a single line `try assertType(exp.t.?, BOOL, UNIT)`.
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
+    // * self.alloc.dupe to copy strings
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
 
@@ -2051,7 +2052,7 @@ pub const Parser = struct {
                             self.createString("{s} = sub {s} 0, {s}", .{ result, codegen.llvmType(exp.t.?.*), exp.rValue.? }),
                             self.c.lastBlockIndex(),
                         );
-                    } else if (!exp.t.?.isSigned()) {
+                    } else {
                         var t = if (exp.t.?.equals(types.Type{ .simple = types.SimpleType.U8 }))
                             types.SimpleType.create(self.alloc, types.SimpleType.I16)
                         else if (exp.t.?.equals(types.Type{ .simple = types.SimpleType.U16 }))
@@ -2079,7 +2080,7 @@ pub const Parser = struct {
 
                         exp.t.?.destroy(self.alloc);
                         exp.t = t;
-                    } else unreachable;
+                    }
 
                     exp.destroyRValue(self.alloc);
                     exp.rValue = self.createString("{s}", .{result});
@@ -2303,7 +2304,7 @@ pub const Parser = struct {
                 },
                 tt.LBRACK => {
                     self.consume(tt.LBRACK) catch unreachable;
-                    if (!exp.t.?.isArray() and !exp.t.?.isPointer()) {
+                    if (!exp.t.?.isArray()) {
                         self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.?.str()});
                         return SyntaxError.TypeError;
                     }
@@ -3485,9 +3486,6 @@ pub const Parser = struct {
             return result;
         }
 
-        // TODO: from.isPointer should be true when from is helper pointer type,
-        // isArray is true when it is not helper pointer type and dimensions >= 0.
-        // TODO: https://ziglang.org/documentation/master/std/#A;std:mem.Allocator.dupe to copy strings?
         if (from.isPointer()) {
             if (to.isArray()) {
                 self.alloc.free(result);
@@ -3529,7 +3527,7 @@ pub const Parser = struct {
             return result;
         }
 
-        if (from.isArray() or from.isPointer()) {
+        if (from.isArray()) {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
 
             if (to.isArray()) {
