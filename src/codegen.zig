@@ -315,6 +315,7 @@ pub const CodeGen = struct {
         \\  %x44 = getelementptr i8, ptr %x43, i64 8
         \\  ret ptr %x44
         \\}
+        \\
     ;
 
     const customDecls =

@@ -1874,7 +1874,7 @@ pub const Parser = struct {
                         codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch unreachable,
                     });
                 },
-                types.TypeTag.array => {
+                types.TypeTag.array, types.TypeTag.pointer => {
                     if (result) |res| self.alloc.free(res);
                     result = self.c.genLLVMNameEmpty();
 
@@ -2139,9 +2139,6 @@ pub const Parser = struct {
             return SyntaxError.TypeError;
         }
 
-        var result: ?[]const u8 = null;
-        defer if (result) |res| self.alloc.free(res);
-
         while (tt.isHigherPrioArithmetic(self.s.peek().tokenType)) {
             var op = self.s.next();
             var yExp = try self.parseArrayIndexingAndPrefixExpressions();
@@ -2173,6 +2170,9 @@ pub const Parser = struct {
 
                     return SyntaxError.TypeError;
                 };
+
+                xExp.destroyRValue(self.alloc);
+                xExp.rValue = self.createString("{d}", .{t.constant.value});
             } else {
                 const valX = try self.convertRep(op, xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valX);
@@ -2180,8 +2180,8 @@ pub const Parser = struct {
                 const valY = try self.convertRep(op, yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valY);
 
-                if (result) |res| self.alloc.free(res);
-                result = self.c.genLLVMNameEmpty();
+                xExp.destroyRValue(self.alloc);
+                xExp.rValue = self.c.genLLVMNameEmpty();
 
                 const opPrefix = if (!t.isDouble() and !t.isFloat() and op.tokenType != tt.MUL) if (t.isSigned()) "s" else "u" else "";
                 const llvmType = codegen.llvmType(t.*);
@@ -2192,7 +2192,7 @@ pub const Parser = struct {
 
                 self.c.emit(
                     self.createString("{s} = {s}{s} {s} {s}, {s}", .{
-                        result.?,
+                        xExp.rValue.?,
                         opPrefix,
                         llvmOp,
                         llvmType,
@@ -2201,9 +2201,6 @@ pub const Parser = struct {
                     }),
                     self.c.lastBlockIndex(),
                 );
-
-                xExp.destroyRValue(self.alloc);
-                xExp.rValue = self.createString("{s}", .{result.?});
             }
 
             // Replace the type of the expression with the new supertype.
@@ -2595,6 +2592,7 @@ pub const Parser = struct {
                 return Expression{
                     .t = types.Type.createPointer(self.alloc),
                     .lt = types.Type.createPointer(self.alloc),
+                    .rValue = self.createString("", .{}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
