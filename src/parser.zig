@@ -88,6 +88,7 @@ pub const Parser = struct {
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
     // * self.alloc.dupe to copy strings
+    // * test array indexing
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
 
@@ -2476,6 +2477,18 @@ pub const Parser = struct {
                         self.c.lastBlockIndex(),
                     );
 
+                    var tmp = self.c.genLLVMNameEmpty();
+                    defer self.alloc.free(tmp);
+
+                    self.c.emit(
+                        self.createString("{s} = getelementptr {s}, ptr {s}, i64 1", .{
+                            tmp,
+                            codegen.llvmType(exp.t.?.array.ofType.*),
+                            wherePtr,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
                     exp.destroyRValue(self.alloc);
                     exp.rValue = self.c.genLLVMNameEmpty();
 
@@ -2483,7 +2496,7 @@ pub const Parser = struct {
                         self.createString("{s} = load {s}, ptr {s}", .{
                             exp.rValue.?,
                             codegen.llvmType(exp.t.?.array.ofType.*),
-                            wherePtr,
+                            tmp,
                         }),
                         self.c.lastBlockIndex(),
                     );
@@ -3308,24 +3321,26 @@ pub const Parser = struct {
             };
         }
 
-        var elemStr = self.createString("{s} {s}", .{ codegen.llvmType(array.ofType.*), elements.items[0] });
-        defer self.alloc.free(elemStr);
+        var currentPtr: []const u8 = self.alloc.dupe(u8, arr) catch unreachable;
+        defer self.alloc.free(currentPtr);
 
-        for (elements.items[1..]) |el| {
-            var n = self.createString("{s}, {s} {s}", .{ elemStr, codegen.llvmType(array.ofType.*), el });
-            self.alloc.free(elemStr);
-            elemStr = n;
-        }
+        for (elements.items) |elem| {
+            var newPtr = self.c.genLLVMNameEmpty();
 
-        self.c.emit(
-            self.createString("store [ {d} x {s} ] [ {s} ], ptr {s}", .{
-                elements.items.len,
+            self.c.emitInit(self.createString("{s} = getelementptr {s}, ptr {s}, i64 1", .{
+                newPtr,
                 codegen.llvmType(array.ofType.*),
-                elemStr,
-                arr,
-            }),
-            self.c.lastBlockIndex(),
-        );
+                currentPtr,
+            }));
+
+            self.c.emit(
+                self.createString("store {s} {s}, ptr {s}", .{ codegen.llvmType(array.ofType.*), elem, newPtr }),
+                self.c.lastBlockIndex(),
+            );
+
+            self.alloc.free(currentPtr);
+            currentPtr = newPtr;
+        }
 
         return Expression{
             .t = a.clone(self.alloc),
