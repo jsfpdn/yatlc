@@ -139,7 +139,12 @@ pub const Parser = struct {
             switch (s.t.*) {
                 types.TypeTag.func => {
                     if (!s.defined) {
-                        self.report(s.location, reporter.Level.ERROR, "function '{s}' is declared but not defined", .{s.name}, true, true);
+                        self.report(
+                            s.location,
+                            reporter.Level.ERROR,
+                            "function '{s}' is declared but not defined",
+                            .{s.name},
+                        );
                     }
                 },
                 else => {},
@@ -217,7 +222,12 @@ pub const Parser = struct {
 
                         if (std.mem.eql(u8, arg.name, "")) {
                             if (fs.t.func.namedParams) {
-                                self.report(fs.location, reporter.Level.ERROR, "function definition of '{s}' must have named arguments", .{fs.name}, true, true);
+                                self.report(
+                                    fs.location,
+                                    reporter.Level.ERROR,
+                                    "function definition of '{s}' must have named arguments",
+                                    .{fs.name},
+                                );
                             }
                             fs.t.func.namedParams = false;
                         } else {
@@ -227,7 +237,12 @@ pub const Parser = struct {
 
                             self.st.insert(newArg) catch |err| switch (err) {
                                 symbols.SymbolError.SymbolAlreadyExists => {
-                                    self.report(fs.location, reporter.Level.ERROR, "cannot define 2 function arguments with the same name", .{}, true, true);
+                                    self.report(
+                                        fs.location,
+                                        reporter.Level.ERROR,
+                                        "cannot define 2 function arguments with the same name",
+                                        .{},
+                                    );
                                     // Destroy the new argument immediately since we need to move on with the parsing.
                                     newArg.destroy(self.alloc);
                                 },
@@ -299,8 +314,8 @@ pub const Parser = struct {
                 // argument types that has been declared but not defined yet.
                 if (self.st.get(ident.symbol)) |s| {
                     if (s.defined) {
-                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name}, true, true);
-                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name}, false, false);
+                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
+                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
                         return SyntaxError.TypeError;
                     }
 
@@ -310,11 +325,26 @@ pub const Parser = struct {
                                 switch (err) {
                                     types.Func.DefinitionErrors.ArgTypeMismatch => {
                                         if (fs.defined) {
-                                            self.report(fs.location, reporter.Level.ERROR, "definition of '{s}' does not match its declaration", .{fs.name}, true, true);
+                                            self.report(
+                                                fs.location,
+                                                reporter.Level.ERROR,
+                                                "definition of '{s}' does not match its declaration",
+                                                .{fs.name},
+                                            );
                                         } else {
-                                            self.report(fs.location, reporter.Level.ERROR, "redaclaration of '{s}' does not match the former declaration", .{fs.name}, true, true);
+                                            self.report(
+                                                fs.location,
+                                                reporter.Level.ERROR,
+                                                "redaclaration of '{s}' does not match the former declaration",
+                                                .{fs.name},
+                                            );
                                         }
-                                        self.report(s.location, reporter.Level.NOTE, "'{s}' first declared here", .{fs.name}, false, false);
+                                        self.report(
+                                            s.location,
+                                            reporter.Level.NOTE,
+                                            "'{s}' first declared here",
+                                            .{fs.name},
+                                        );
                                         // TODO: Make error reporting better - show where the mismatch is.
                                     },
                                 }
@@ -328,7 +358,12 @@ pub const Parser = struct {
                             self.st.upsert(fs);
                         },
                         else => {
-                            self.report(fs.location, reporter.Level.ERROR, "function '{s}' shadows global variable", .{fs.name}, true, true);
+                            self.report(
+                                fs.location,
+                                reporter.Level.ERROR,
+                                "function '{s}' shadows global variable",
+                                .{fs.name},
+                            );
                             // TODO: Return better error? We need to return with error
                             // in order to destroy all the data structures.
                             return SyntaxError.TypeError;
@@ -345,8 +380,6 @@ pub const Parser = struct {
                     reporter.Level.ERROR,
                     "expected either function declaration, definition or global variable definiton",
                     .{},
-                    true,
-                    true,
                 );
                 return SyntaxError.UnexpectedToken;
             },
@@ -387,7 +420,7 @@ pub const Parser = struct {
 
                 const id = try self.consumeGet(tt.IDENT);
                 if (types.startsType(id.symbol)) {
-                    self.report(id, reporter.Level.ERROR, "function argument cannot be named as a type", .{}, true, true);
+                    self.report(id, reporter.Level.ERROR, "function argument cannot be named as a type", .{});
                     return SyntaxError.TypeError;
                 }
 
@@ -397,7 +430,7 @@ pub const Parser = struct {
             }
 
             if (std.mem.eql(u8, s.name, "") and types.SimpleType.isType(s.name)) {
-                self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{}, true, true);
+                self.report(next, reporter.Level.ERROR, "function argument must not be named as type", .{});
             } else {
                 try args.append(s);
             }
@@ -422,7 +455,7 @@ pub const Parser = struct {
                 tp.* = types.Type{ .simple = t };
                 return tp;
             } else {
-                self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol}, true, true);
+                self.report(tok, reporter.Level.ERROR, "'{s}' is not a type", .{tok.symbol});
                 return SyntaxError.UnexpectedToken;
             },
             tt.LBRACK => {
@@ -450,7 +483,7 @@ pub const Parser = struct {
                 return tp;
             },
             else => {
-                self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol}, true, true);
+                self.report(tok, reporter.Level.ERROR, "expected type, found '{s}' instead", .{tok.symbol});
                 return SyntaxError.UnexpectedToken;
             },
         };
@@ -512,7 +545,7 @@ pub const Parser = struct {
             tok = self.s.peek();
             if (tok.tokenType == tt.SEMICOLON) {
                 if (!semi and exp.?.semiMustFollow) {
-                    self.report(tok, reporter.Level.ERROR, "unexpected ';'", .{}, true, true);
+                    self.report(tok, reporter.Level.ERROR, "unexpected ';'", .{});
                     return SyntaxError.TypeError;
                 }
                 try self.consume(tt.SEMICOLON);
@@ -521,7 +554,7 @@ pub const Parser = struct {
             }
 
             if (semi and !endParseExpression(tok.tokenType)) {
-                self.report(tok, reporter.Level.ERROR, "expected ';' but got '{s}' instead", .{tok.str()}, true, true);
+                self.report(tok, reporter.Level.ERROR, "expected ';' but got '{s}' instead", .{tok.str()});
                 return SyntaxError.TypeError;
             }
         }
@@ -545,7 +578,7 @@ pub const Parser = struct {
         defer ifExp.destroy(self.alloc);
 
         if (!ifExp.t.?.isBool()) {
-            self.report(lparen, reporter.Level.ERROR, "non-boolean condition in if statement", .{}, true, true);
+            self.report(lparen, reporter.Level.ERROR, "non-boolean condition in if statement", .{});
             return SyntaxError.TypeError;
         }
 
@@ -658,7 +691,7 @@ pub const Parser = struct {
         var condExp = try self.parseExpression();
         defer condExp.destroy(self.alloc);
         if (!condExp.t.?.isBool()) {
-            self.report(comma, reporter.Level.ERROR, "condition of for loop must be boolean", .{}, true, true);
+            self.report(comma, reporter.Level.ERROR, "condition of for loop must be boolean", .{});
             return SyntaxError.TypeError;
         }
 
@@ -735,7 +768,7 @@ pub const Parser = struct {
         defer exp.destroy(self.alloc);
 
         if (!exp.t.?.isBool()) {
-            self.report(lparen, reporter.Level.ERROR, "condition of while loop must be boolean", .{}, true, true);
+            self.report(lparen, reporter.Level.ERROR, "condition of while loop must be boolean", .{});
             return SyntaxError.TypeError;
         }
 
@@ -819,7 +852,7 @@ pub const Parser = struct {
         var exp = try self.parseExpression();
         defer exp.destroy(self.alloc);
         if (!exp.t.?.isBool()) {
-            self.report(lparen, reporter.Level.ERROR, "condition of do-while must be boolean", .{}, true, true);
+            self.report(lparen, reporter.Level.ERROR, "condition of do-while must be boolean", .{});
             return SyntaxError.TypeError;
         }
 
@@ -878,8 +911,6 @@ pub const Parser = struct {
                         reporter.Level.ERROR,
                         "function must return value of type '{s}' instead of unit",
                         .{self.returnType.?.str()},
-                        true,
-                        true,
                     );
                     return SyntaxError.TypeError;
                 }
@@ -937,7 +968,7 @@ pub const Parser = struct {
         const br = self.consumeGet(tt.BREAK) catch unreachable;
 
         if (self.breakStack.items.len == 0) {
-            self.report(br, reporter.Level.ERROR, "there is nothing to break out of", .{}, true, true);
+            self.report(br, reporter.Level.ERROR, "there is nothing to break out of", .{});
             return SyntaxError.TypeError;
         }
 
@@ -963,7 +994,7 @@ pub const Parser = struct {
         const cont = self.consumeGet(tt.CONTINUE) catch unreachable;
 
         if (self.contStack.items.len == 0) {
-            self.report(cont, reporter.Level.ERROR, "there is no loop to continue next iteration in", .{}, true, true);
+            self.report(cont, reporter.Level.ERROR, "there is no loop to continue next iteration in", .{});
             return SyntaxError.TypeError;
         }
 
@@ -1002,7 +1033,7 @@ pub const Parser = struct {
 
             identTok = try self.consumeGet(tt.IDENT);
             if (types.startsType(identTok.?.symbol)) {
-                self.report(identTok.?, reporter.Level.ERROR, "variable cannot be named as a type", .{}, true, true);
+                self.report(identTok.?, reporter.Level.ERROR, "variable cannot be named as a type", .{});
                 return SyntaxError.TypeError;
             }
 
@@ -1043,7 +1074,7 @@ pub const Parser = struct {
         }
 
         if (!exp.hasLValue) {
-            self.report(assignTok, reporter.Level.ERROR, "invalid left-hand side to assignment", .{}, true, true);
+            self.report(assignTok, reporter.Level.ERROR, "invalid left-hand side to assignment", .{});
             return SyntaxError.TypeError;
         }
 
@@ -1091,12 +1122,22 @@ pub const Parser = struct {
                 defer rhsExp.destroy(self.alloc);
 
                 if (!exp.lt.?.isIntegral() and !exp.lt.?.isBool() or exp.lt.?.isConstant()) {
-                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for integral types, not for {s}", .{ assignTok.symbol, exp.lt.?.str() }, true, true);
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "{s} is allowed only for integral types, not for {s}",
+                        .{ assignTok.symbol, exp.lt.?.str() },
+                    );
                     return SyntaxError.TypeError;
                 }
 
                 if (!rhsExp.t.?.isIntegral() and !rhsExp.t.?.isBool()) {
-                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for integral types, not for {s}", .{ assignTok.symbol, exp.lt.?.str() }, true, true);
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "{s} is allowed only for integral types, not for {s}",
+                        .{ assignTok.symbol, exp.lt.?.str() },
+                    );
                     return SyntaxError.TypeError;
                 }
 
@@ -1125,16 +1166,26 @@ pub const Parser = struct {
             tt.LAND_ASSIGN, tt.LOR_ASSIGN => {
                 // TODO: Create a single function for emitting all the necessary IR (including type conversions) for the lazy operations.
                 self.consume(tt.LAND_ASSIGN) catch unreachable;
-                if (!exp.lt.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.?.str() }, true, true);
+                if (!exp.lt.?.isBool()) {
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "{s} is allowed only for booleans, not for {s}",
+                        .{ assignTok.symbol, exp.lt.?.str() },
+                    );
                     return SyntaxError.TypeError;
                 }
 
                 var rhsExp = try self.parseSubExpression();
                 defer rhsExp.destroy(self.alloc);
 
-                if (!rhsExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                    self.report(tok, reporter.Level.ERROR, "{s} is allowed only for booleans, not for {s}", .{ assignTok.symbol, exp.lt.?.str() }, true, true);
+                if (!rhsExp.t.?.isBool()) {
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "{s} is allowed only for booleans, not for {s}",
+                        .{ assignTok.symbol, exp.lt.?.str() },
+                    );
                     return SyntaxError.TypeError;
                 }
 
@@ -1157,14 +1208,7 @@ pub const Parser = struct {
     fn declare(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token, defined: bool) SyntaxError![]const u8 {
         if (self.st.declared(ident)) {
             var prevDef = self.st.get(ident).?;
-            self.report(
-                at,
-                reporter.Level.ERROR,
-                "'{s}' already declared at {d}:{d}",
-                .{ ident, prevDef.location.sourceLoc.line, prevDef.location.sourceLoc.column },
-                true,
-                true,
-            );
+            self.report(at, reporter.Level.ERROR, "'{s}' already declared at {d}:{d}", .{ ident, prevDef.location.sourceLoc.line, prevDef.location.sourceLoc.column });
             return SyntaxError.TypeError;
         }
         var s = symbols.Symbol{
@@ -1191,7 +1235,7 @@ pub const Parser = struct {
         }
 
         if (!exp.t.?.isBool()) {
-            self.report(tok, reporter.Level.ERROR, "non-boolean condition in a ternary operator statement", .{}, true, true);
+            self.report(tok, reporter.Level.ERROR, "non-boolean condition in a ternary operator statement", .{});
             return SyntaxError.TypeError;
         }
 
@@ -1207,13 +1251,21 @@ pub const Parser = struct {
                 var exp3 = try self.parseTernaryExpression();
                 defer exp3.destroy(self.alloc);
 
+                // TODO: Tuck error handling away?
                 var t: *types.Type = types.leastSupertype(self.alloc, exp2.t.?, exp3.t.?) orelse {
-                    self.report(tok, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ exp2.t.?.str(), exp3.t.?.str() }, true, true);
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "no common supertype for '{s}' and '{s}'",
+                        .{ exp2.t.?.str(), exp3.t.?.str() },
+                    );
                     return SyntaxError.TypeError;
                 };
 
                 if (exp2.hasLValue and exp3.hasLValue and exp2.lt.?.equals(exp3.lt.?.*)) {
-                    if (!exp2.lt.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {}
+                    if (!exp2.lt.?.isUnit()) {
+                        // TODO: Implement me.
+                    }
                 }
 
                 // Destroy the previous type and replace it with the new supertype.
@@ -1291,8 +1343,6 @@ pub const Parser = struct {
                         reporter.Level.ERROR,
                         "no common supertype for '{s}' and '{s}'",
                         .{ exp2.t.?.str(), exp3.t.?.str() },
-                        true,
-                        true,
                     );
                     return SyntaxError.TypeError;
                 };
@@ -1390,8 +1440,8 @@ pub const Parser = struct {
         }
         errdefer exp.destroy(self.alloc);
 
-        if (!exp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+        if (!exp.t.?.isBool()) {
+            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()});
             return SyntaxError.TypeError;
         }
 
@@ -1430,8 +1480,8 @@ pub const Parser = struct {
                         var nExp = try self.parseNot();
                         defer nExp.destroy(self.alloc);
 
-                        if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+                        if (!nExp.t.?.isBool()) {
+                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()});
                             return SyntaxError.TypeError;
                         }
 
@@ -1472,8 +1522,13 @@ pub const Parser = struct {
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
 
-                        if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+                        if (!nExp.t.?.isBool()) {
+                            self.report(
+                                tok,
+                                reporter.Level.ERROR,
+                                "cannot perform '{s}' on non-boolean values",
+                                .{tok.str()},
+                            );
                             return SyntaxError.TypeError;
                         }
                     }
@@ -1544,8 +1599,8 @@ pub const Parser = struct {
                         var nExp = try self.parseNot();
                         defer nExp.destroy(self.alloc);
 
-                        if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+                        if (!nExp.t.?.isBool()) {
+                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()});
                             return SyntaxError.TypeError;
                         }
 
@@ -1586,8 +1641,8 @@ pub const Parser = struct {
                         self.alloc.free(lastValue);
                         lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
 
-                        if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+                        if (!nExp.t.?.isBool()) {
+                            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()});
                             return SyntaxError.TypeError;
                         }
                     }
@@ -1654,8 +1709,8 @@ pub const Parser = struct {
                     var nExp = try self.parseNot();
                     defer nExp.destroy(self.alloc);
 
-                    if (!nExp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                        self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()}, true, true);
+                    if (!nExp.t.?.isBool()) {
+                        self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on non-boolean values", .{tok.str()});
                         return SyntaxError.TypeError;
                     }
 
@@ -1696,8 +1751,8 @@ pub const Parser = struct {
             var exp = try self.parseNot();
             errdefer exp.destroy(self.alloc);
 
-            if (!exp.t.?.equals(types.Type{ .simple = types.SimpleType.BOOL })) {
-                self.report(tok, reporter.Level.ERROR, "can negate only booleans", .{}, true, true);
+            if (!exp.t.?.isBool()) {
+                self.report(tok, reporter.Level.ERROR, "can negate only booleans", .{});
                 return SyntaxError.TypeError;
             }
 
@@ -1742,7 +1797,12 @@ pub const Parser = struct {
 
             // FIXME: No common supertype for array and array is found.
             var t: *types.Type = types.leastSupertype(self.alloc, xExp.t.?, yExp.t.?) orelse {
-                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
+                self.report(
+                    op,
+                    reporter.Level.ERROR,
+                    "no common supertype for '{s}' and '{s}'",
+                    .{ xExp.t.?.str(), yExp.t.?.str() },
+                );
                 return SyntaxError.TypeError;
             };
             defer t.destroy(self.alloc);
@@ -1760,7 +1820,15 @@ pub const Parser = struct {
                             tt.EQL => result = self.createString("1", .{}),
                             tt.NEQ => result = self.createString("0", .{}),
                             // Even though we hit type error, we can continue with the parsing.
-                            else => self.report(op, reporter.Level.ERROR, "unit type can be only tested for equality and inequality", .{}, true, true),
+                            else => {
+                                self.report(
+                                    op,
+                                    reporter.Level.ERROR,
+                                    "unit type can be only tested for equality and inequality",
+                                    .{},
+                                );
+                                return SyntaxError.TypeError;
+                            },
                         }
                     } else if (t.isFloat() or t.isDouble()) {
                         const inst = codegen.llvmFloatOp(op.tokenType);
@@ -1818,7 +1886,12 @@ pub const Parser = struct {
                             self.createString("{s} = icmp ne ptr {s}, {s}", .{ result.?, valX, valY }),
                             self.c.lastBlockIndex(),
                         ),
-                        else => self.report(op, reporter.Level.ERROR, "pointer type can be only tested for equality and inequality", .{}, true, true),
+                        else => self.report(
+                            op,
+                            reporter.Level.ERROR,
+                            "pointer type can be only tested for equality and inequality",
+                            .{},
+                        ),
                     }
                 },
                 // The only way we get here is if the common least supertype is function and that cannot happen.
@@ -1867,8 +1940,8 @@ pub const Parser = struct {
             return xExp;
         }
 
-        if (xExp.t.?.isArray() or xExp.t.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
-            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.?.str() }, true, true);
+        if (xExp.t.?.isArray() or xExp.t.?.isUnit()) {
+            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.?.str() });
             return SyntaxError.TypeError;
         }
 
@@ -1881,23 +1954,28 @@ pub const Parser = struct {
             var yExp = try self.parseUnaryOperators();
             defer yExp.destroy(self.alloc);
 
-            if (yExp.t.?.isArray() or yExp.t.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
-                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}' and '{s}'", .{ tok.symbol, xExp.t.?.str(), yExp.t.?.str() }, true, true);
+            if (yExp.t.?.isArray() or yExp.t.?.isUnit()) {
+                self.report(
+                    op,
+                    reporter.Level.ERROR,
+                    "cannot perform '{s}' on '{s}' and '{s}'",
+                    .{ tok.symbol, xExp.t.?.str(), yExp.t.?.str() },
+                );
                 return SyntaxError.TypeError;
             }
 
             var t: *types.Type = types.leastSupertype(self.alloc, xExp.t.?, yExp.t.?) orelse {
-                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
+                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() });
                 return SyntaxError.TypeError;
             };
 
-            if (t.equals(types.Type{ .simple = types.SimpleType.BOOL }) and op.tokenType != tt.B_AND and op.tokenType != tt.B_OR and op.tokenType != tt.B_XOR) {
-                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
+            if (t.isBool() and op.tokenType != tt.B_AND and op.tokenType != tt.B_OR and op.tokenType != tt.B_XOR) {
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() });
                 return SyntaxError.TypeError;
             }
 
-            if ((t.equals(types.Type{ .simple = types.SimpleType.DOUBLE }) or t.equals(types.Type{ .simple = types.SimpleType.FLOAT })) and (op.tokenType != tt.ADD and op.tokenType != tt.SUB)) {
-                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() }, true, true);
+            if ((t.isDouble() or t.isFloat()) and (op.tokenType != tt.ADD and op.tokenType != tt.SUB)) {
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, t.str() });
                 return SyntaxError.TypeError;
             }
 
@@ -1953,7 +2031,7 @@ pub const Parser = struct {
                 errdefer exp.destroy(self.alloc);
 
                 if (!exp.t.?.isIntegral() or exp.t.?.equals(types.Type{ .simple = types.SimpleType.U64 })) {
-                    self.report(tok, reporter.Level.ERROR, "cannot perform unary minus on '{s}'", .{exp.t.?.str()}, true, true);
+                    self.report(tok, reporter.Level.ERROR, "cannot perform unary minus on '{s}'", .{exp.t.?.str()});
                     return SyntaxError.TypeError;
                 }
 
@@ -2020,7 +2098,7 @@ pub const Parser = struct {
                 errdefer exp.destroy(self.alloc);
 
                 if (!exp.t.?.isIntegral()) {
-                    self.report(tok, reporter.Level.ERROR, "cannot perform bitwise negation on '{s}'", .{exp.t.?.str()}, true, true);
+                    self.report(tok, reporter.Level.ERROR, "cannot perform bitwise negation on '{s}'", .{exp.t.?.str()});
                     return SyntaxError.TypeError;
                 }
 
@@ -2062,7 +2140,7 @@ pub const Parser = struct {
         }
 
         if (xExp.t.?.isArray() or xExp.t.?.isUnit() or xExp.t.?.isBool()) {
-            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.?.str() }, true, true);
+            self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.?.str() });
             return SyntaxError.TypeError;
         }
 
@@ -2075,21 +2153,27 @@ pub const Parser = struct {
             defer yExp.destroy(self.alloc);
 
             if (yExp.t.?.isArray() or yExp.t.?.isUnit() or yExp.t.?.isBool()) {
-                self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ op.symbol, yExp.t.?.str() }, true, true);
+                self.report(tok, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ op.symbol, yExp.t.?.str() });
                 return SyntaxError.TypeError;
             }
 
             var t: *types.Type = types.leastSupertype(self.alloc, xExp.t.?, yExp.t.?) orelse {
-                self.report(op, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ xExp.t.?.str(), yExp.t.?.str() }, true, true);
+                self.report(
+                    op,
+                    reporter.Level.ERROR,
+                    "no common supertype for '{s}' and '{s}'",
+                    .{ xExp.t.?.str(), yExp.t.?.str() },
+                );
                 return SyntaxError.TypeError;
             };
             errdefer t.destroy(self.alloc);
 
             if (t.isConstant()) {
+                // TODO: Tuck error handling away?
                 t.constant.value = codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch |err| {
                     switch (err) {
-                        error.DivisionByZero => self.report(op, reporter.Level.ERROR, "cannot divide by 0", .{}, true, true),
-                        error.RemainderAfterZero => self.report(op, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}, true, true),
+                        error.DivisionByZero => self.report(op, reporter.Level.ERROR, "cannot divide by 0", .{}),
+                        error.RemainderAfterZero => self.report(op, reporter.Level.ERROR, "cannot compute remainder after dividing by 0", .{}),
                     }
 
                     return SyntaxError.TypeError;
@@ -2154,7 +2238,12 @@ pub const Parser = struct {
                     self.consume(tok.tokenType) catch unreachable;
 
                     if (!exp.hasLValue) {
-                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be incremented or decremented", .{}, true, true);
+                        self.report(
+                            tok,
+                            reporter.Level.ERROR,
+                            "must be l-value in order to be incremented or decremented",
+                            .{},
+                        );
                         return SyntaxError.TypeError;
                     }
 
@@ -2162,7 +2251,12 @@ pub const Parser = struct {
                     defer self.alloc.free(valX);
 
                     if (!exp.lt.?.isIntegral()) {
-                        self.report(tok, reporter.Level.ERROR, "value of type '{s}' cannot be incremented or decremented", .{exp.t.?.str()}, true, true);
+                        self.report(
+                            tok,
+                            reporter.Level.ERROR,
+                            "value of type '{s}' cannot be incremented or decremented",
+                            .{exp.t.?.str()},
+                        );
                         return SyntaxError.TypeError;
                     }
 
@@ -2190,7 +2284,7 @@ pub const Parser = struct {
                 tt.HASH => {
                     self.consume(tt.HASH) catch unreachable;
                     if (!exp.hasLValue) {
-                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be referenced", .{}, true, true);
+                        self.report(tok, reporter.Level.ERROR, "must be l-value in order to be referenced", .{});
                         return SyntaxError.TypeError;
                     }
 
@@ -2210,7 +2304,7 @@ pub const Parser = struct {
                 tt.LBRACK => {
                     self.consume(tt.LBRACK) catch unreachable;
                     if (!exp.t.?.isArray() and !exp.t.?.isPointer()) {
-                        self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.?.str()}, true, true);
+                        self.report(tok, reporter.Level.ERROR, "'{s}' cannot be indexed", .{exp.t.?.str()});
                         return SyntaxError.TypeError;
                     }
 
@@ -2218,7 +2312,12 @@ pub const Parser = struct {
                         // Zero-dimensional array.
                         self.consume(tt.RBRACK) catch unreachable;
                         if (exp.t.?.array.dimensions != 0) {
-                            self.report(tok, reporter.Level.ERROR, "indexing to array must be {d}-dimensional instead of 0-dimensional", .{exp.t.?.array.dimensions}, true, true);
+                            self.report(
+                                tok,
+                                reporter.Level.ERROR,
+                                "indexing to array must be {d}-dimensional instead of 0-dimensional",
+                                .{exp.t.?.array.dimensions},
+                            );
                             return SyntaxError.TypeError;
                         }
                         exp.lt = exp.t.?.array.ofType.clone(self.alloc);
@@ -2278,7 +2377,12 @@ pub const Parser = struct {
 
                             next = self.s.peek();
                             if (next.tokenType == tt.RBRACK) {
-                                self.report(next, reporter.Level.ERROR, "expected index but found '{s}' instead", .{next.symbol}, true, true);
+                                self.report(
+                                    next,
+                                    reporter.Level.ERROR,
+                                    "expected index but found '{s}' instead",
+                                    .{next.symbol},
+                                );
                                 return SyntaxError.TypeError;
                             }
                         } else {
@@ -2288,7 +2392,12 @@ pub const Parser = struct {
                     }
 
                     if (indexes.items.len != exp.t.?.array.dimensions) {
-                        self.report(next, reporter.Level.ERROR, "cannot index {d}-dimensional array with {d}-dimensional index", .{ exp.t.?.array.dimensions, indexes.items.len }, true, true);
+                        self.report(
+                            next,
+                            reporter.Level.ERROR,
+                            "cannot index {d}-dimensional array with {d}-dimensional index",
+                            .{ exp.t.?.array.dimensions, indexes.items.len },
+                        );
                         return SyntaxError.TypeError;
                     }
 
@@ -2425,7 +2534,7 @@ pub const Parser = struct {
                     return try self.parseFunctionCall(ident);
                 } else {
                     var s = self.st.get(ident.symbol) orelse {
-                        self.report(next, reporter.Level.ERROR, "no variable '{s}' is defined", .{next.symbol}, true, true);
+                        self.report(next, reporter.Level.ERROR, "no variable '{s}' is defined", .{next.symbol});
                         return SyntaxError.TypeError;
                     };
 
@@ -2523,8 +2632,6 @@ pub const Parser = struct {
                                 reporter.Level.ERROR,
                                 "expected array type, found '{s}' instead",
                                 .{newT.str()},
-                                true,
-                                true,
                             );
 
                             return SyntaxError.TypeError;
@@ -2543,15 +2650,7 @@ pub const Parser = struct {
                     return self.parseBuiltinCall();
                 }
 
-                self.report(
-                    next,
-                    reporter.Level.ERROR,
-                    "expected either type cast or builtin function call after '@'",
-                    .{},
-                    true,
-                    true,
-                );
-
+                self.report(next, reporter.Level.ERROR, "expected either type cast or builtin function call after '@'", .{});
                 return SyntaxError.TypeError;
             },
             tt.C_CHAR => {
@@ -2582,7 +2681,12 @@ pub const Parser = struct {
                 };
             },
             else => {
-                self.report(next, reporter.Level.ERROR, "expected '{s}', '(', identifier, function call or a constant value but got '{s}' instead", .{ tt.LBRACE.str(), next.tokenType.str() }, true, true);
+                self.report(
+                    next,
+                    reporter.Level.ERROR,
+                    "expected '{s}', '(', identifier, function call or a constant value but got '{s}' instead",
+                    .{ tt.LBRACE.str(), next.tokenType.str() },
+                );
                 return SyntaxError.UnexpectedToken;
             },
         }
@@ -2749,14 +2853,7 @@ pub const Parser = struct {
             };
         }
 
-        self.report(
-            lparen,
-            reporter.Level.ERROR,
-            "1st argument of '@alloc' is {s} instead of array or pointer",
-            .{ptrT.str()},
-            true,
-            true,
-        );
+        self.report(lparen, reporter.Level.ERROR, "1st argument of '@alloc' is {s} instead of array or pointer", .{ptrT.str()});
         return SyntaxError.TypeError;
     }
 
@@ -2794,8 +2891,6 @@ pub const Parser = struct {
                 reporter.Level.ERROR,
                 "expected either pointer or array but found {s} instead",
                 .{exp.t.?.str()},
-                true,
-                true,
             );
         }
 
@@ -2832,7 +2927,7 @@ pub const Parser = struct {
         defer exp.destroy(self.alloc);
 
         if (!exp.t.?.isArray()) {
-            self.report(next, reporter.Level.ERROR, "cannot free {s}", .{exp.t.?.str()}, true, true);
+            self.report(next, reporter.Level.ERROR, "cannot free {s}", .{exp.t.?.str()});
             return SyntaxError.TypeError;
         }
 
@@ -2874,7 +2969,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.I64),
-            .rValue = self.createString("{d}", .{types.SimpleType.width(t.simple)}),
+            .rValue = self.createString("{d}", .{t.byteWidth()}),
             .semiMustFollow = true,
         };
     }
@@ -2886,15 +2981,7 @@ pub const Parser = struct {
         defer exp.destroy(self.alloc);
 
         if (!exp.t.?.isArray()) {
-            self.report(
-                next,
-                reporter.Level.ERROR,
-                "can get length of array only, not {s}",
-                .{exp.t.?.str()},
-                true,
-                true,
-            );
-
+            self.report(next, reporter.Level.ERROR, "can get length of array only, not {s}", .{exp.t.?.str()});
             return SyntaxError.TypeError;
         }
 
@@ -3128,7 +3215,7 @@ pub const Parser = struct {
                 if (currentDepth >= d) {
                     if (dimensions.items[currentDepth - 1] != currentIndexes.items[currentDepth - 1]) {
                         // TODO: Better error message?
-                        self.report(tok, reporter.Level.ERROR, "dimension mismatch", .{}, true, true);
+                        self.report(tok, reporter.Level.ERROR, "dimension mismatch", .{});
                         return SyntaxError.TypeError;
                     }
                 } else {
@@ -3188,7 +3275,7 @@ pub const Parser = struct {
 
         self.c.emitInit(self.createString("{s} = alloca [ {d} x i64 ]", .{
             place,
-            @divFloor((types.byteWidth(array.ofType.*) * elements.items.len + 7), 8) + array.dimensions,
+            @divFloor((array.ofType.byteWidth() * elements.items.len + 7), 8) + array.dimensions,
         }));
 
         var dimensionStr = self.createString("i64 {d}", .{dimensions.items[0]});
@@ -3254,29 +3341,31 @@ pub const Parser = struct {
         const next = self.s.next();
 
         if (next.tokenType == tt.ILLEGAL) {
-            self.report(next, reporter.Level.ERROR, "encountered illegal symbol '{s}'", .{next.symbol}, true, true);
+            self.report(next, reporter.Level.ERROR, "encountered illegal symbol '{s}'", .{next.symbol});
         }
 
         if (want != next.tokenType) {
-            self.report(next, reporter.Level.ERROR, "expected '{s}' but found '{s}' instead", .{ tt.str(want), next.symbol }, true, true);
+            self.report(
+                next,
+                reporter.Level.ERROR,
+                "expected '{s}' but found '{s}' instead",
+                .{ tt.str(want), next.symbol },
+            );
             return SyntaxError.UnexpectedToken;
         }
 
         return next;
     }
 
-    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype, showLine: bool, space: bool) void {
+    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype) void {
         // TODO: When reporting, denote in what stage the error happened - scanning, parsing, typechecking, code generation?
         const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
         defer self.alloc.free(msg);
 
         if (self.r) |rep| {
-            if (space) {
-                rep.space();
-                rep.space();
-            }
+            rep.space();
 
-            rep.report(tok, level, msg, showLine);
+            rep.report(tok, level, msg, true);
         }
     }
 
@@ -3299,16 +3388,12 @@ pub const Parser = struct {
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s} due to possible overflow",
                     .{ from.str(), to.str() },
-                    true,
-                    true,
                 ),
                 ConvErr.NoImplicit => self.report(
                     loc,
                     reporter.Level.ERROR,
                     "cannot cast value of type {s} to {s}",
                     .{ from.str(), to.str() },
-                    true,
-                    true,
                 ),
             }
             return SyntaxError.TypeError;
@@ -3559,7 +3644,7 @@ pub const Parser = struct {
         }
 
         if (!from.isSigned() and from.isNumeric()) {
-            if (to.simple.width() > from.simple.width()) {
+            if (to.bitWidth() > from.bitWidth()) {
                 // If `to` has greater bit width than `from`.
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3595,7 +3680,7 @@ pub const Parser = struct {
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
 
-                if (from.simple.width() > t.simple.width()) {
+                if (from.bitWidth() > t.bitWidth()) {
                     // If `from` has greater bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -3606,7 +3691,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (from.simple.width() < t.simple.width()) {
+                } else if (from.bitWidth() < t.bitWidth()) {
                     // If `from` has smaller bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3674,7 +3759,7 @@ pub const Parser = struct {
         }
 
         if (from.isSigned()) {
-            if (to.isSigned() and to.simple.width() > from.simple.width()) {
+            if (to.isSigned() and to.bitWidth() > from.bitWidth()) {
                 // `to` is numeric and has greater bit width than `from`
                 if (conv != ConvMode.BITCAST) {
                     self.c.emit(
@@ -3721,7 +3806,7 @@ pub const Parser = struct {
                     types.SimpleType.create(self.alloc, types.SimpleType.U64);
                 defer t.destroy(self.alloc);
 
-                if (from.simple.width() > t.simple.width()) {
+                if (from.bitWidth() > t.bitWidth()) {
                     // `from` has bit width greater than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -3732,7 +3817,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (from.simple.width() < t.simple.width()) {
+                } else if (from.bitWidth() < t.bitWidth()) {
                     // `from` has bit width smaller than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3763,7 +3848,7 @@ pub const Parser = struct {
 
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
 
-            if (to.isNumeric() and to.simple.width() > from.simple.width()) {
+            if (to.isNumeric() and to.bitWidth() > from.bitWidth()) {
                 // `to` is numeric and has greater bit width than `from`.
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
@@ -3778,7 +3863,7 @@ pub const Parser = struct {
                 return result;
             }
 
-            if (to.isNumeric() and to.simple.width() == from.simple.width()) {
+            if (to.isNumeric() and to.bitWidth() == from.bitWidth()) {
                 // `to` is numeric and has the same bit width as `from`.
                 self.alloc.free(result);
                 return std.fmt.allocPrint(self.alloc, "{s}", .{what}) catch unreachable;
@@ -3949,7 +4034,7 @@ pub const Parser = struct {
                     blockIndex,
                 );
 
-                if (to.simple.width() < t.simple.width()) {
+                if (to.bitWidth() < t.bitWidth()) {
                     // `to` has smaller bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = trunc {s} {s} to {s}", .{
@@ -3960,7 +4045,7 @@ pub const Parser = struct {
                         }) catch unreachable,
                         blockIndex,
                     );
-                } else if (to.simple.width() > t.simple.width()) {
+                } else if (to.bitWidth() > t.bitWidth()) {
                     // `to` has greater bit width than `t`.
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{

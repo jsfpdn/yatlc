@@ -41,8 +41,6 @@ pub const SimpleType = enum(u8) {
         "unit",
     };
 
-    const widths = [@typeInfo(SimpleType).Enum.fields.len]u8{ 64, 32, 16, 8, 64, 32, 16, 8, 32, 64, 1, 0 };
-
     pub fn str(self: SimpleType) []const u8 {
         return SimpleTypeTable[@intFromEnum(self)];
     }
@@ -61,10 +59,6 @@ pub const SimpleType = enum(u8) {
         }
 
         return null;
-    }
-
-    pub fn width(self: SimpleType) u8 {
-        return SimpleType.widths[@intFromEnum(self)];
     }
 
     pub fn isType(name: []const u8) bool {
@@ -93,18 +87,6 @@ pub const SimpleType = enum(u8) {
         return @intFromEnum(st) >= @intFromEnum(SimpleType.I64) and @intFromEnum(st) <= @intFromEnum(SimpleType.I8);
     }
 };
-
-// TODO: Implement bitWidth, byteWidth.
-
-pub fn bitWidth(t: Type) usize {
-    _ = t;
-    return 0;
-}
-
-pub fn byteWidth(t: Type) usize {
-    _ = t;
-    return 0;
-}
 
 pub const Array = struct {
     alloc: std.mem.Allocator,
@@ -340,6 +322,33 @@ pub const Type = union(TypeTag) {
             TypeTag.pointer => "pointer",
         };
     }
+
+    pub fn bitWidth(self: Type) u8 {
+        return switch (self) {
+            TypeTag.simple => |st| switch (st) {
+                SimpleType.BOOL => 1,
+                SimpleType.I8, SimpleType.U8 => 8,
+                SimpleType.I16, SimpleType.U16 => 16,
+                SimpleType.I32, SimpleType.U32 => 32,
+                SimpleType.I64, SimpleType.U64 => 64,
+                else => unreachable,
+            },
+            else => unreachable,
+        };
+    }
+
+    pub fn byteWidth(self: Type) u8 {
+        return switch (self) {
+            TypeTag.simple => |st| switch (st) {
+                SimpleType.UNIT => 0,
+                SimpleType.FLOAT => 4,
+                SimpleType.DOUBLE => 8,
+                else => @divExact(self.bitWidth(), 8),
+            },
+            TypeTag.array => 8,
+            else => unreachable,
+        };
+    }
 };
 
 pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type) ?*Type {
@@ -375,7 +384,7 @@ pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type
     if (fst.isDouble() or snd.isDouble()) return SimpleType.create(alloc, SimpleType.DOUBLE);
     if (fst.isFloat() or snd.isFloat()) return SimpleType.create(alloc, SimpleType.FLOAT);
 
-    if (fst.simple.width() < snd.simple.width() or (fst.simple.width() == snd.simple.width() and fst.simple.isSigned())) {
+    if (fst.bitWidth() < snd.bitWidth() or (fst.bitWidth() == snd.bitWidth() and fst.simple.isSigned())) {
         var t = fst;
         fst = snd;
         snd = t;

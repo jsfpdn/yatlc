@@ -224,7 +224,7 @@ pub const CodeGen = struct {
         self.emit(
             std.fmt.allocPrint(self.alloc, "{s} = call ptr @malloc(i64 {d})", .{
                 result,
-                types.SimpleType.width(toType.simple),
+                toType.byteWidth(),
             }) catch unreachable,
             self.lastBlockIndex(),
         );
