@@ -520,12 +520,17 @@ pub fn evalConstant(
         tt.QUO => if (rhsInt != 0) @divFloor(lhsInt, rhsInt) else error.DivisionByZero,
         tt.REM => if (rhsInt != 0) @rem(lhsInt, rhsInt) else error.RemainderAfterZero,
 
-        // TODO: Figure out the shifts.
-        // tt.B_RSH => self.createString("{d}", .{lhsInt >> rhsInt}),
-        // tt.B_LSH => self.createString("{d}", .{lhsInt << rhsInt}),
         tt.B_AND => lhsInt & rhsInt,
         tt.B_OR => lhsInt | rhsInt,
         tt.B_XOR => lhsInt ^ rhsInt,
+        tt.B_RSH => if (rhsInt > 127 or rhsInt < -127)
+            0
+        else
+            @bitCast(@as(u128, @bitCast(lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(rhsInt))))),
+        tt.B_LSH => if (rhsInt > 127 or rhsInt < -127)
+            0
+        else
+            @bitCast(@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(rhsInt))))),
 
         else => unreachable,
     };
