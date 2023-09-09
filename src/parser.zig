@@ -18,7 +18,6 @@ pub const Expression = struct {
     rValue: ?[]const u8 = null,
 
     hasLValue: bool = false,
-    lValueComputed: bool = false,
     lValue: ?[]const u8 = null,
 
     semiMustFollow: bool = false,
@@ -54,7 +53,6 @@ pub const Expression = struct {
             .t = if (self.t) |t| t.clone(alloc) else null,
             .lt = if (self.lt) |lt| lt.clone(alloc) else null,
             .hasLValue = self.hasLValue,
-            .lValueComputed = self.lValueComputed,
             .semiMustFollow = self.semiMustFollow,
             .endsWithReturn = self.endsWithReturn,
         };
@@ -504,7 +502,6 @@ pub const Parser = struct {
                 .lt = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .endsWithReturn = false,
                 .semiMustFollow = false,
-                .lValueComputed = false,
             };
         }
 
@@ -1370,6 +1367,8 @@ pub const Parser = struct {
                 defer self.alloc.free(elseConv);
 
                 var result: ?[]const u8 = null;
+                defer if (result) |r| self.alloc.free(r);
+
                 if (exp2.hasLValue and exp3.hasLValue and exp2.lt.?.equals(exp3.lt.?.*)) {
                     if (!exp2.lt.?.isUnit()) {
                         result = self.c.genLLVMNameEmpty();
@@ -1393,6 +1392,7 @@ pub const Parser = struct {
                 }
 
                 if (!t.isUnit()) {
+                    if (result) |r| self.alloc.free(r);
                     result = self.c.genLLVMNameEmpty();
 
                     self.c.emit(
@@ -1947,9 +1947,6 @@ pub const Parser = struct {
             return SyntaxError.TypeError;
         }
 
-        var result: ?[]const u8 = null;
-        defer if (result) |r| self.alloc.free(r);
-
         while (tt.isLowerPrioArithmetic(self.s.peek().tokenType)) {
             var op = self.s.next();
 
@@ -1984,7 +1981,8 @@ pub const Parser = struct {
             if (t.isConstant()) {
                 // We can safely `catch unreachable` since evalConstant throws error only for divison and remainder.
                 t.constant.value = codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch unreachable;
-                result = self.createString("{d}", .{t.constant.value});
+                xExp.destroyRValue(self.alloc);
+                xExp.rValue = self.createString("{d}", .{t.constant.value});
             } else {
                 const valX = try self.convertRep(op, xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valX);
@@ -1992,8 +1990,8 @@ pub const Parser = struct {
                 const valY = try self.convertRep(op, yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valY);
 
-                if (result) |res| self.alloc.free(res);
-                result = self.c.genLLVMNameEmpty();
+                xExp.destroyRValue(self.alloc);
+                xExp.rValue = self.c.genLLVMNameEmpty();
 
                 const opPrefix = if (op.tokenType == tt.B_RSH) if (t.isSigned()) "a" else "l" else "";
                 const llvmType = codegen.llvmType(t.*);
@@ -2003,7 +2001,7 @@ pub const Parser = struct {
                     codegen.llvmIntOp(op.tokenType);
 
                 self.c.emit(
-                    self.createString("{s} = {s}{s} {s} {s}, {s}", .{ result.?, opPrefix, llvmOp, llvmType, valX, valY }),
+                    self.createString("{s} = {s}{s} {s} {s}, {s}", .{ xExp.rValue.?, opPrefix, llvmOp, llvmType, valX, valY }),
                     self.c.lastBlockIndex(),
                 );
             }
@@ -2012,11 +2010,7 @@ pub const Parser = struct {
             xExp.t = t;
         }
 
-        xExp.destroyRValue(self.alloc);
-        xExp.rValue = self.alloc.dupe(u8, result.?) catch unreachable;
-
         xExp.destroyLValue(self.alloc);
-
         xExp.semiMustFollow = true;
         xExp.endsWithReturn = false;
         return xExp;
@@ -2477,18 +2471,6 @@ pub const Parser = struct {
                         self.c.lastBlockIndex(),
                     );
 
-                    var tmp = self.c.genLLVMNameEmpty();
-                    defer self.alloc.free(tmp);
-
-                    self.c.emit(
-                        self.createString("{s} = getelementptr {s}, ptr {s}, i64 1", .{
-                            tmp,
-                            codegen.llvmType(exp.t.?.array.ofType.*),
-                            wherePtr,
-                        }),
-                        self.c.lastBlockIndex(),
-                    );
-
                     exp.destroyRValue(self.alloc);
                     exp.rValue = self.c.genLLVMNameEmpty();
 
@@ -2496,7 +2478,7 @@ pub const Parser = struct {
                         self.createString("{s} = load {s}, ptr {s}", .{
                             exp.rValue.?,
                             codegen.llvmType(exp.t.?.array.ofType.*),
-                            tmp,
+                            wherePtr,
                         }),
                         self.c.lastBlockIndex(),
                     );
@@ -3243,6 +3225,7 @@ pub const Parser = struct {
                 if (currentDepth == 0) {
                     break;
                 }
+
                 currentIndexes.items[currentDepth - 1] += 1;
                 comma = true;
                 continue;
@@ -3321,17 +3304,25 @@ pub const Parser = struct {
             };
         }
 
+        self.c.emit(
+            self.createString("store {s} {s}, ptr {s}", .{ codegen.llvmType(array.ofType.*), elements.items[0], arr }),
+            self.c.lastBlockIndex(),
+        );
+
         var currentPtr: []const u8 = self.alloc.dupe(u8, arr) catch unreachable;
         defer self.alloc.free(currentPtr);
 
-        for (elements.items) |elem| {
+        for (elements.items[1..]) |elem| {
             var newPtr = self.c.genLLVMNameEmpty();
 
-            self.c.emitInit(self.createString("{s} = getelementptr {s}, ptr {s}, i64 1", .{
-                newPtr,
-                codegen.llvmType(array.ofType.*),
-                currentPtr,
-            }));
+            self.c.emit(
+                self.createString("{s} = getelementptr {s}, ptr {s}, i64 1", .{
+                    newPtr,
+                    codegen.llvmType(array.ofType.*),
+                    currentPtr,
+                }),
+                self.c.lastBlockIndex(),
+            );
 
             self.c.emit(
                 self.createString("store {s} {s}, ptr {s}", .{ codegen.llvmType(array.ofType.*), elem, newPtr }),
@@ -3346,6 +3337,7 @@ pub const Parser = struct {
             .t = a.clone(self.alloc),
             .lt = a.clone(self.alloc),
             .rValue = self.alloc.dupe(u8, arr) catch unreachable,
+            .semiMustFollow = true,
         };
     }
 
