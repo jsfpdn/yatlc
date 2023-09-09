@@ -82,7 +82,11 @@ pub const Parser = struct {
     returnType: ?*types.Type = null,
 
     // TODO:
-    // * constant folding
+    // * implement assertType (variadic funciton) which takes expression and types, iterates
+    //   over them. If none match, error is reported and TypeError is returned. This will
+    //   simplify asserts to just a single line `try assertType(exp.t.?, BOOL, UNIT)`.
+    //   Figure out how to represent the types neatly.
+    //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
 
@@ -165,14 +169,7 @@ pub const Parser = struct {
                 var exp = try self.parseSubExpression();
                 defer exp.destroy(self.alloc);
 
-                const value = self.convert(exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex()) catch |err| {
-                    switch (err) {
-                        ConvErr.Overflow => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ exp.t.?.str(), t.str() }, true, true),
-                        ConvErr.NoImplicit => self.report(ident, reporter.Level.ERROR, "cannot cast value of type {s} to {s}", .{ exp.t.?.str(), t.str() }, true, true),
-                    }
-
-                    return SyntaxError.TypeError;
-                };
+                const value = try self.convertRep(next, exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex());
                 _ = value;
 
                 _ = try self.declare(ident.symbol, t, ident, true);
@@ -256,6 +253,7 @@ pub const Parser = struct {
 
                     self.c.emitBlock(bl);
 
+                    var begin = self.s.peek();
                     var exp = try self.parseBody();
                     defer exp.destroy(self.alloc);
 
@@ -266,10 +264,14 @@ pub const Parser = struct {
                                 self.c.lastBlockIndex(),
                             );
                         } else {
-                            var retVal = self.convert(exp.t.?, self.returnType.?, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch {
-                                self.report(fs.location, reporter.Level.ERROR, "cannot return value of type {s} from function that must return {s}", .{ exp.t.?.str(), self.returnType.?.str() }, true, true);
-                                return SyntaxError.TypeError;
-                            };
+                            var retVal = try self.convertRep(
+                                begin,
+                                exp.t.?,
+                                self.returnType.?,
+                                ConvMode.IMPLICIT,
+                                exp.rValue.?,
+                                self.c.lastBlockIndex(),
+                            );
                             defer self.alloc.free(retVal);
 
                             self.c.emit(
@@ -895,35 +897,14 @@ pub const Parser = struct {
                 var retExp = try self.parseSubExpression();
                 defer retExp.destroy(self.alloc);
 
-                const value = self.convert(
+                const value = try self.convertRep(
+                    ret,
                     retExp.t.?,
                     self.returnType.?,
                     ConvMode.IMPLICIT,
                     retExp.rValue.?,
                     self.c.lastBlockIndex(),
-                ) catch |err| {
-                    switch (err) {
-                        ConvErr.Overflow => self.report(
-                            ret,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s} due to possible overflow",
-                            .{ retExp.t.?.str(), self.returnType.?.str() },
-                            true,
-                            true,
-                        ),
-                        ConvErr.NoImplicit => self.report(
-                            ret,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s}",
-                            .{ retExp.t.?.str(), self.returnType.?.str() },
-                            true,
-                            true,
-                        ),
-                    }
-
-                    return SyntaxError.TypeError;
-                };
-
+                );
                 defer self.alloc.free(value);
 
                 if (self.returnType.?.isUnit()) {
@@ -1073,28 +1054,14 @@ pub const Parser = struct {
                 defer subExp.destroy(self.alloc);
 
                 if (exp.t.?.isUnit() and subExp.t.?.isUnit()) {} else {
-                    var value = self.convert(subExp.t.?, exp.t.?, ConvMode.IMPLICIT, subExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                        switch (err) {
-                            ConvErr.Overflow => self.report(
-                                assignTok,
-                                reporter.Level.ERROR,
-                                "cannot cast value of type {s} to {s} due to possible overflow",
-                                .{ subExp.t.?.str(), exp.t.?.str() },
-                                true,
-                                true,
-                            ),
-                            ConvErr.NoImplicit => self.report(
-                                assignTok,
-                                reporter.Level.ERROR,
-                                "cannot cast value of type {s} to {s}",
-                                .{ subExp.t.?.str(), exp.t.?.str() },
-                                true,
-                                true,
-                            ),
-                        }
-
-                        return SyntaxError.TypeError;
-                    };
+                    var value = try self.convertRep(
+                        assignTok,
+                        subExp.t.?,
+                        exp.t.?,
+                        ConvMode.IMPLICIT,
+                        subExp.rValue.?,
+                        self.c.lastBlockIndex(),
+                    );
 
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{
@@ -1119,7 +1086,7 @@ pub const Parser = struct {
                 exp.semiMustFollow = true;
             },
             tt.ADD_ASSIGN, tt.SUB_ASSIGN, tt.MUL_ASSIGN, tt.QUO_ASSIGN, tt.REM_ASSIGN, tt.LSH_ASSIGN, tt.RSH_ASSIGN, tt.AND_ASSIGN, tt.OR_ASSIGN, tt.XOR_ASSIGN => {
-                self.consume(assignTok.tokenType) catch unreachable;
+                var next = self.consumeGet(assignTok.tokenType) catch unreachable;
                 var rhsExp = try self.parseSubExpression();
                 defer rhsExp.destroy(self.alloc);
 
@@ -1133,28 +1100,14 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
-                const value = self.convert(rhsExp.t.?, exp.lt.?, ConvMode.IMPLICIT, rhsExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                    switch (err) {
-                        ConvErr.Overflow => self.report(
-                            assignTok,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s} due to possible overflow",
-                            .{ rhsExp.t.?.str(), exp.t.?.str() },
-                            true,
-                            true,
-                        ),
-                        ConvErr.NoImplicit => self.report(
-                            assignTok,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s}",
-                            .{ rhsExp.t.?.str(), exp.t.?.str() },
-                            true,
-                            true,
-                        ),
-                    }
-
-                    return SyntaxError.TypeError;
-                };
+                const value = try self.convertRep(
+                    next,
+                    rhsExp.t.?,
+                    exp.lt.?,
+                    ConvMode.IMPLICIT,
+                    rhsExp.rValue.?,
+                    self.c.lastBlockIndex(),
+                );
                 defer self.alloc.free(value);
 
                 var rvalue = self.emitOpAssign(assignTok.tokenType, exp, value);
@@ -1297,6 +1250,7 @@ pub const Parser = struct {
 
                 self.c.emitBlock(thenBlockName);
 
+                var thenBegin = self.s.peek();
                 var exp2 = try self.parseExpression();
                 defer exp2.destroy(self.alloc);
 
@@ -1314,6 +1268,7 @@ pub const Parser = struct {
 
                 self.c.emitBlock(elseBlockName);
 
+                var elseBegin = self.s.peek();
                 var exp3 = try self.parseTernaryExpression();
                 defer exp3.destroy(self.alloc);
 
@@ -1331,15 +1286,35 @@ pub const Parser = struct {
                 self.c.emitBlock(nextBlockName);
 
                 var t: *types.Type = types.leastSupertype(self.alloc, exp2.t.?, exp3.t.?) orelse {
-                    self.report(tok, reporter.Level.ERROR, "no common supertype for '{s}' and '{s}'", .{ exp2.t.?.str(), exp3.t.?.str() }, true, true);
+                    self.report(
+                        tok,
+                        reporter.Level.ERROR,
+                        "no common supertype for '{s}' and '{s}'",
+                        .{ exp2.t.?.str(), exp3.t.?.str() },
+                        true,
+                        true,
+                    );
                     return SyntaxError.TypeError;
                 };
 
-                // TODO: Improve error handling.
-                var thenConv = self.convert(exp2.t.?, t, ConvMode.IMPLICIT, exp2.rValue.?, thenBackpatchingIndex) catch return SyntaxError.TypeError;
+                var thenConv = try self.convertRep(
+                    thenBegin,
+                    exp2.t.?,
+                    t,
+                    ConvMode.IMPLICIT,
+                    exp2.rValue.?,
+                    thenBackpatchingIndex,
+                );
                 defer self.alloc.free(thenConv);
 
-                var elseConv = self.convert(exp3.t.?, t, ConvMode.IMPLICIT, exp3.rValue.?, elseBackpatchingIndex) catch return SyntaxError.TypeError;
+                var elseConv = try self.convertRep(
+                    elseBegin,
+                    exp3.t.?,
+                    t,
+                    ConvMode.IMPLICIT,
+                    exp3.rValue.?,
+                    elseBackpatchingIndex,
+                );
                 defer self.alloc.free(elseConv);
 
                 var result: ?[]const u8 = null;
@@ -1772,24 +1747,10 @@ pub const Parser = struct {
             };
             defer t.destroy(self.alloc);
 
-            const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                switch (err) {
-                    ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
-                    ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
-                }
-                return SyntaxError.TypeError;
-            };
+            const valX = try self.convertRep(op, xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex());
             defer self.alloc.free(valX);
 
-            const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                switch (err) {
-                    ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
-                    ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
-                }
-                return SyntaxError.TypeError;
-            };
+            const valY = try self.convertRep(op, yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex());
             defer self.alloc.free(valY);
 
             switch (t.*) {
@@ -1912,6 +1873,8 @@ pub const Parser = struct {
         }
 
         var result: ?[]const u8 = null;
+        defer if (result) |r| self.alloc.free(r);
+
         while (tt.isLowerPrioArithmetic(self.s.peek().tokenType)) {
             var op = self.s.next();
 
@@ -1919,7 +1882,7 @@ pub const Parser = struct {
             defer yExp.destroy(self.alloc);
 
             if (yExp.t.?.isArray() or yExp.t.?.equals(types.Type{ .simple = types.SimpleType.UNIT })) {
-                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}'", .{ tok.symbol, xExp.t.?.str() }, true, true);
+                self.report(op, reporter.Level.ERROR, "cannot perform '{s}' on '{s}' and '{s}'", .{ tok.symbol, xExp.t.?.str(), yExp.t.?.str() }, true, true);
                 return SyntaxError.TypeError;
             }
 
@@ -1943,24 +1906,10 @@ pub const Parser = struct {
                 t.constant.value = codegen.evalConstant(op.tokenType, xExp.rValue.?, yExp.rValue.?) catch unreachable;
                 result = self.createString("{d}", .{t.constant.value});
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                    switch (err) {
-                        ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
-                        ConvErr.NoImplicit => self.report(tok, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
-                    }
-                    return SyntaxError.TypeError;
-                };
+                const valX = try self.convertRep(op, xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valX);
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                    switch (err) {
-                        ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
-                        ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
-                    }
-                    return SyntaxError.TypeError;
-                };
+                const valY = try self.convertRep(op, yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valY);
 
                 if (result) |res| self.alloc.free(res);
@@ -1984,7 +1933,7 @@ pub const Parser = struct {
         }
 
         xExp.destroyRValue(self.alloc);
-        xExp.rValue = result.?;
+        xExp.rValue = self.alloc.dupe(u8, result.?) catch unreachable;
 
         xExp.destroyLValue(self.alloc);
 
@@ -2052,10 +2001,10 @@ pub const Parser = struct {
 
                         exp.t.?.destroy(self.alloc);
                         exp.t = t;
-
-                        exp.destroyRValue(self.alloc);
-                        exp.rValue = self.createString("{s}", .{result});
                     } else unreachable;
+
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = self.createString("{s}", .{result});
                 }
 
                 exp.destroyLValue(self.alloc);
@@ -2146,24 +2095,10 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 };
             } else {
-                const valX = self.convert(xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                    switch (err) {
-                        ConvErr.Overflow => self.report(tok, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ xExp.t.?.str(), t.str() }, true, true),
-                        ConvErr.NoImplicit => self.report(tok, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ xExp.t.?.str(), t.str() }, true, true),
-                    }
-                    return SyntaxError.TypeError;
-                };
+                const valX = try self.convertRep(op, xExp.t.?, t, ConvMode.IMPLICIT, xExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valX);
 
-                const valY = self.convert(yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-                    // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-                    switch (err) {
-                        ConvErr.Overflow => self.report(op, reporter.Level.ERROR, "cannot cast value of type {s} to {s} due to possible overflow", .{ yExp.t.?.str(), t.str() }, true, true),
-                        ConvErr.NoImplicit => self.report(op, reporter.Level.ERROR, "cannot cast value value of type {s} to {s}", .{ yExp.t.?.str(), t.str() }, true, true),
-                    }
-                    return SyntaxError.TypeError;
-                };
+                const valY = try self.convertRep(op, yExp.t.?, t, ConvMode.IMPLICIT, yExp.rValue.?, self.c.lastBlockIndex());
                 defer self.alloc.free(valY);
 
                 if (result) |res| self.alloc.free(res);
@@ -2223,17 +2158,7 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
-                    const valX = self.convert(exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch {
-                        self.report(
-                            tok,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s}",
-                            .{ exp.lt.?.str(), exp.t.?.str() },
-                            true,
-                            true,
-                        );
-                        return SyntaxError.TypeError;
-                    };
+                    const valX = try self.convertRep(tok, exp.lt.?, exp.t.?, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex());
                     defer self.alloc.free(valX);
 
                     if (!exp.lt.?.isIntegral()) {
@@ -2343,18 +2268,7 @@ pub const Parser = struct {
                         } else {
                             const t = types.SimpleType.create(self.alloc, types.SimpleType.I64);
                             defer t.destroy(self.alloc);
-                            const value = self.convert(iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue.?, self.c.lastBlockIndex()) catch {
-                                self.report(
-                                    tok,
-                                    reporter.Level.ERROR,
-                                    "cannot cast value of type {s} to {s}",
-                                    .{ iExp.t.?.str(), t.str() },
-                                    true,
-                                    true,
-                                );
-
-                                return SyntaxError.TypeError;
-                            };
+                            const value = try self.convertRep(next, iExp.t.?, t, ConvMode.IMPLICIT, iExp.rValue.?, self.c.lastBlockIndex());
                             indexes.append(value) catch unreachable;
                         }
 
@@ -2599,8 +2513,29 @@ pub const Parser = struct {
                 self.consume(tt.AT) catch unreachable;
 
                 if (types.startsType(self.s.peek().symbol)) {
+                    var newT = try self.parseType();
+                    defer newT.destroy(self.alloc);
+
+                    if (self.s.peek().tokenType == tt.LBRACK) {
+                        if (!newT.isArray()) {
+                            self.report(
+                                self.s.peek(),
+                                reporter.Level.ERROR,
+                                "expected array type, found '{s}' instead",
+                                .{newT.str()},
+                                true,
+                                true,
+                            );
+
+                            return SyntaxError.TypeError;
+                        }
+
+                        // We're dealing with array initialization.
+                        return self.parseArrayInit(newT);
+                    }
+
                     // We're dealing with explicit type conversion.
-                    return self.parseCast();
+                    return self.parseCast(newT);
                 }
 
                 if (token.TokenType.isBuiltin(self.s.peek().tokenType)) {
@@ -2654,38 +2589,13 @@ pub const Parser = struct {
         unreachable;
     }
 
-    fn parseCast(self: *Parser) SyntaxError!Expression {
+    fn parseCast(self: *Parser, newT: *types.Type) SyntaxError!Expression {
         const loc = self.s.peek();
-
-        var newT = try self.parseType();
-        defer newT.destroy(self.alloc);
 
         var cExp = try self.parseI();
         errdefer cExp.destroy(self.alloc);
 
-        const result = self.convert(cExp.t.?, newT, ConvMode.EXPLICIT, cExp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-            // TODO: Error is reported at the wrong token. Fix this by adding token pointing to the start of an expression.
-            switch (err) {
-                ConvErr.Overflow => self.report(
-                    loc,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s} due to possible overflow",
-                    .{ cExp.t.?.str(), newT.str() },
-                    true,
-                    true,
-                ),
-                ConvErr.NoImplicit => self.report(
-                    loc,
-                    reporter.Level.ERROR,
-                    "cannot cast value value of type {s} to {s}",
-                    .{ cExp.t.?.str(), newT.str() },
-                    true,
-                    true,
-                ),
-            }
-
-            return SyntaxError.TypeError;
-        };
+        const result = try self.convertRep(loc, cExp.t.?, newT, ConvMode.EXPLICIT, cExp.rValue.?, self.c.lastBlockIndex());
 
         cExp.t.?.destroy(self.alloc);
         cExp.t = newT.clone(self.alloc);
@@ -2761,34 +2671,14 @@ pub const Parser = struct {
                 var exp = try self.parseExpression();
                 defer exp.destroy(self.alloc);
 
-                var dimension = self.convert(
+                var dimension = try self.convertRep(
+                    next,
                     exp.t.?,
                     helperI64T,
                     ConvMode.IMPLICIT,
                     exp.rValue.?,
                     self.c.lastBlockIndex(),
-                ) catch |err| {
-                    switch (err) {
-                        ConvErr.Overflow => self.report(
-                            next,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s} due to possible overflow",
-                            .{ exp.t.?.str(), helperI64T.str() },
-                            true,
-                            true,
-                        ),
-                        ConvErr.NoImplicit => self.report(
-                            next,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s}",
-                            .{ exp.t.?.str(), helperI64T.str() },
-                            true,
-                            true,
-                        ),
-                    }
-
-                    return SyntaxError.TypeError;
-                };
+                );
 
                 dimensions.append(dimension) catch unreachable;
 
@@ -2879,34 +2769,7 @@ pub const Parser = struct {
         var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
         defer helperI64T.destroy(self.alloc);
 
-        var size = self.convert(
-            exp.t.?,
-            helperI64T,
-            ConvMode.IMPLICIT,
-            exp.rValue.?,
-            self.c.lastBlockIndex(),
-        ) catch |err| {
-            switch (err) {
-                ConvErr.Overflow => self.report(
-                    next,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s} due to possible overflow",
-                    .{ exp.t.?.str(), helperI64T.str() },
-                    true,
-                    true,
-                ),
-                ConvErr.NoImplicit => self.report(
-                    next,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s}",
-                    .{ exp.t.?.str(), helperI64T.str() },
-                    true,
-                    true,
-                ),
-            }
-
-            return SyntaxError.TypeError;
-        };
+        var size = try self.convertRep(next, exp.t.?, helperI64T, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex());
         defer self.alloc.free(size);
 
         var result = self.c.genLLVMNameEmpty();
@@ -2944,34 +2807,7 @@ pub const Parser = struct {
         var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
         defer helperI64T.destroy(self.alloc);
 
-        var size = self.convert(
-            exp2.t.?,
-            helperI64T,
-            ConvMode.IMPLICIT,
-            exp2.rValue.?,
-            self.c.lastBlockIndex(),
-        ) catch |err| {
-            switch (err) {
-                ConvErr.Overflow => self.report(
-                    comma,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s} due to possible overflow",
-                    .{ exp.t.?.str(), helperI64T.str() },
-                    true,
-                    true,
-                ),
-                ConvErr.NoImplicit => self.report(
-                    comma,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s}",
-                    .{ exp.t.?.str(), helperI64T.str() },
-                    true,
-                    true,
-                ),
-            }
-
-            return SyntaxError.TypeError;
-        };
+        var size = try self.convertRep(comma, exp2.t.?, helperI64T, ConvMode.IMPLICIT, exp2.rValue.?, self.c.lastBlockIndex());
         defer self.alloc.free(size);
 
         try self.consume(tt.RPAREN);
@@ -3105,28 +2941,7 @@ pub const Parser = struct {
 
         try self.consume(tt.RPAREN);
 
-        var result = self.convert(exp.t.?, t, ConvMode.BITCAST, exp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-            switch (err) {
-                ConvErr.Overflow => self.report(
-                    comma,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s} due to possible overflow",
-                    .{ exp.t.?.str(), t.str() },
-                    true,
-                    true,
-                ),
-                ConvErr.NoImplicit => self.report(
-                    comma,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s}",
-                    .{ exp.t.?.str(), t.str() },
-                    true,
-                    true,
-                ),
-            }
-
-            return SyntaxError.TypeError;
-        };
+        var result = try self.convertRep(comma, exp.t.?, t, ConvMode.BITCAST, exp.rValue.?, self.c.lastBlockIndex());
         return Expression{
             .t = t.clone(self.alloc),
             .rValue = result,
@@ -3143,28 +2958,7 @@ pub const Parser = struct {
         var helperI32T = types.SimpleType.create(self.alloc, types.SimpleType.I32);
         defer helperI32T.destroy(self.alloc);
 
-        var result = self.convert(exp.t.?, helperI32T, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex()) catch |err| {
-            switch (err) {
-                ConvErr.Overflow => self.report(
-                    next,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s} due to possible overflow",
-                    .{ exp.t.?.str(), helperI32T.str() },
-                    true,
-                    true,
-                ),
-                ConvErr.NoImplicit => self.report(
-                    next,
-                    reporter.Level.ERROR,
-                    "cannot cast value of type {s} to {s}",
-                    .{ exp.t.?.str(), helperI32T.str() },
-                    true,
-                    true,
-                ),
-            }
-
-            return SyntaxError.TypeError;
-        };
+        var result = try self.convertRep(next, exp.t.?, helperI32T, ConvMode.IMPLICIT, exp.rValue.?, self.c.lastBlockIndex());
         defer self.alloc.free(result);
 
         self.c.emit(
@@ -3193,37 +2987,20 @@ pub const Parser = struct {
         }
 
         for (0..funcSymbol.t.func.args.items.len, funcSymbol.t.func.args.items) |i, arg| {
+            const next = self.s.peek();
+
             var exp = try self.parseExpression();
             defer exp.destroy(self.alloc);
 
             if (!exp.t.?.isUnit()) {
-                llvmArgs.append(self.convert(
+                llvmArgs.append(try self.convertRep(
+                    next,
                     exp.t.?,
                     arg.t,
                     ConvMode.IMPLICIT,
                     exp.rValue.?,
                     self.c.lastBlockIndex(),
-                ) catch |err| {
-                    switch (err) {
-                        ConvErr.Overflow => self.report(
-                            ident,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s} due to possible overflow",
-                            .{ exp.t.?.str(), arg.t.str() },
-                            true,
-                            true,
-                        ),
-                        ConvErr.NoImplicit => self.report(
-                            ident,
-                            reporter.Level.ERROR,
-                            "cannot cast value of type {s} to {s}",
-                            .{ exp.t.?.str(), arg.t.str() },
-                            true,
-                            true,
-                        ),
-                    }
-                    return SyntaxError.TypeError;
-                }) catch unreachable;
+                )) catch unreachable;
 
                 llvmTypes.append(codegen.llvmType(arg.t.*)) catch unreachable;
             } else if (!arg.t.isUnit()) {
@@ -3265,6 +3042,210 @@ pub const Parser = struct {
         return exp;
     }
 
+    fn parseArrayInit(self: *Parser, array: *types.Type) SyntaxError!Expression {
+        if (!array.isArray()) unreachable;
+
+        try self.consume(tt.LBRACK);
+
+        if (array.array.dimensions == 0) {
+            return self.parseArrayInitZeroD(array.array);
+        }
+
+        return self.parseArrayInitMultiD(array);
+    }
+
+    fn parseArrayInitZeroD(self: *Parser, array: types.Array) SyntaxError!Expression {
+        var exp = try self.parseExpression();
+        defer exp.destroy(self.alloc);
+
+        const next = try self.consumeGet(tt.RBRACK);
+
+        var arr: []const u8 = "";
+        const elem = try self.convertRep(
+            next,
+            exp.t.?,
+            array.ofType,
+            ConvMode.IMPLICIT,
+            exp.rValue.?,
+            self.c.lastBlockIndex(),
+        );
+        defer self.alloc.free(elem);
+
+        if (array.ofType.isUnit()) {
+            arr = self.createString("null", .{});
+        } else {
+            arr = self.c.genLLVMNameEmpty();
+
+            self.c.emitInit(self.createString(
+                "{s} = alloca {s}",
+                .{ arr, codegen.llvmType(array.ofType.*) },
+            ));
+
+            self.c.emit(
+                self.createString(
+                    "store {s} {s}, ptr {s}",
+                    .{ codegen.llvmType(array.ofType.*), elem, arr },
+                ),
+                self.c.lastBlockIndex(),
+            );
+        }
+
+        return Expression{
+            .t = array.ofType.clone(self.alloc),
+            .lt = array.ofType.clone(self.alloc),
+            .rValue = arr,
+        };
+    }
+
+    fn parseArrayInitMultiD(self: *Parser, a: *types.Type) SyntaxError!Expression {
+        var array = a.array;
+
+        var d: usize = array.dimensions + 1;
+        var currentDepth: usize = 1;
+        var comma = false;
+
+        var dimensions = std.ArrayList(i32).initCapacity(self.alloc, array.dimensions) catch unreachable;
+        var currentIndexes = std.ArrayList(i32).initCapacity(self.alloc, array.dimensions) catch unreachable;
+        defer {
+            dimensions.deinit();
+            currentIndexes.deinit();
+        }
+        for (0..array.dimensions) |i| {
+            _ = i;
+            dimensions.append(0) catch unreachable;
+            currentIndexes.append(0) catch unreachable;
+        }
+
+        var elements = std.ArrayList([]const u8).init(self.alloc);
+        defer {
+            for (elements.items) |i| self.alloc.free(i);
+            elements.deinit();
+        }
+
+        while (true) {
+            var tok = self.s.peek();
+            if (tok.tokenType == tt.RBRACK) {
+                if (currentDepth >= d) {
+                    if (dimensions.items[currentDepth - 1] != currentIndexes.items[currentDepth - 1]) {
+                        // TODO: Better error message?
+                        self.report(tok, reporter.Level.ERROR, "dimension mismatch", .{}, true, true);
+                        return SyntaxError.TypeError;
+                    }
+                } else {
+                    dimensions.items[currentDepth - 1] = currentIndexes.items[currentDepth - 1];
+                    d = currentDepth;
+                }
+
+                self.consume(tt.RBRACK) catch unreachable;
+
+                currentDepth -= 1;
+                if (currentDepth == 0) {
+                    break;
+                }
+                currentIndexes.items[currentDepth - 1] += 1;
+                comma = true;
+                continue;
+            }
+
+            if (comma) {
+                try self.consume(tt.COMMA);
+            }
+
+            tok = self.s.peek();
+            if (currentDepth == array.dimensions) {
+                var exp = try self.parseExpression();
+                defer exp.destroy(self.alloc);
+
+                var result = try self.convertRep(
+                    tok,
+                    exp.t.?,
+                    array.ofType,
+                    ConvMode.IMPLICIT,
+                    exp.rValue.?,
+                    self.c.lastBlockIndex(),
+                );
+
+                elements.append(result) catch unreachable;
+                currentIndexes.items[currentDepth - 1] += 1;
+                comma = true;
+                continue;
+            }
+
+            try self.consume(tt.LBRACK);
+
+            currentDepth += 1;
+            currentIndexes.items[currentDepth - 1] = 0;
+            comma = false;
+        }
+
+        var place = self.c.genLLVMNameEmpty();
+        var arr = self.c.genLLVMNameEmpty();
+
+        defer {
+            self.alloc.free(place);
+            self.alloc.free(arr);
+        }
+
+        self.c.emitInit(self.createString("{s} = alloca [ {d} x i64 ]", .{
+            place,
+            @divFloor((types.byteWidth(array.ofType.*) * elements.items.len + 7), 8) + array.dimensions,
+        }));
+
+        var dimensionStr = self.createString("i64 {d}", .{dimensions.items[0]});
+        defer self.alloc.free(dimensionStr);
+
+        for (1..array.dimensions) |i| {
+            var n = self.createString("{s}, i64 {d}", .{ dimensionStr, dimensions.items[i] });
+            self.alloc.free(dimensionStr);
+            dimensionStr = n;
+        }
+
+        self.c.emitInit(self.createString("store [ {d} x i64 ] [ {s} ], ptr {s}", .{
+            array.dimensions,
+            dimensionStr,
+            place,
+        }));
+
+        self.c.emitInit(self.createString("{s} = getelementptr [ {d} x i64 ], ptr {s}, i64 1", .{
+            arr,
+            array.dimensions,
+            place,
+        }));
+
+        if (array.ofType.isUnit() or elements.items.len == 0) {
+            return Expression{
+                .t = a.clone(self.alloc),
+                .lt = a.clone(self.alloc),
+                .rValue = self.alloc.dupe(u8, arr) catch unreachable,
+            };
+        }
+
+        var elemStr = self.createString("{s} {s}", .{ codegen.llvmType(array.ofType.*), elements.items[0] });
+        defer self.alloc.free(elemStr);
+
+        for (elements.items[1..]) |el| {
+            var n = self.createString("{s}, {s} {s}", .{ elemStr, codegen.llvmType(array.ofType.*), el });
+            self.alloc.free(elemStr);
+            elemStr = n;
+        }
+
+        self.c.emit(
+            self.createString("store [ {d} x {s} ] [ {s} ], ptr {s}", .{
+                elements.items.len,
+                codegen.llvmType(array.ofType.*),
+                elemStr,
+                arr,
+            }),
+            self.c.lastBlockIndex(),
+        );
+
+        return Expression{
+            .t = a.clone(self.alloc),
+            .lt = a.clone(self.alloc),
+            .rValue = self.alloc.dupe(u8, arr) catch unreachable,
+        };
+    }
+
     fn consume(self: *Parser, want: tt) SyntaxError!void {
         _ = try self.consumeGet(want);
     }
@@ -3301,6 +3282,38 @@ pub const Parser = struct {
 
     const ConvMode = enum { IMPLICIT, EXPLICIT, BITCAST };
     const ConvErr = error{ NoImplicit, Overflow };
+
+    fn convertRep(
+        self: *Parser,
+        loc: token.Token,
+        from: *types.Type,
+        to: *types.Type,
+        conv: ConvMode,
+        what: []const u8,
+        blockIndex: usize,
+    ) SyntaxError![]const u8 {
+        return self.convert(from, to, conv, what, blockIndex) catch |err| {
+            switch (err) {
+                ConvErr.Overflow => self.report(
+                    loc,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s} due to possible overflow",
+                    .{ from.str(), to.str() },
+                    true,
+                    true,
+                ),
+                ConvErr.NoImplicit => self.report(
+                    loc,
+                    reporter.Level.ERROR,
+                    "cannot cast value of type {s} to {s}",
+                    .{ from.str(), to.str() },
+                    true,
+                    true,
+                ),
+            }
+            return SyntaxError.TypeError;
+        };
+    }
 
     fn convert(
         self: *Parser,

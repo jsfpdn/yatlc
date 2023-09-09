@@ -1,12 +1,17 @@
 i32 main() {
-    [-]u8 array = @malloc(10 * 8);
+    [-]u8 array1 = @[-]u8 [10, 20, 30];
 
-    for (i32 i = 0, i < @len array, i++) {}
+    [-,-]u8 array2 = @[-,-]u8 [
+        [10, 20, 30],
+        [40, 50, 60]
+    ];
 
-    u8 tmp = array[1]+2;
-    u16 tmp2 = array[tmp];
+    [-][-]u8 array3 = @[-][-]u8 [
+        @[-]u8 [10, 20, 30],
+        @[-]u8 [40]
+        @[-]u8 [50, 60, 70, 80]
+    ];
 
-    array[3] = tmp;
-
-    return 0;
+    // Returns 10 + 50 + 80
+    return array1[0] + array2[1,1] + array3[2][3];
 }

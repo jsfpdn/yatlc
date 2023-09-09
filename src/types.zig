@@ -94,6 +94,18 @@ pub const SimpleType = enum(u8) {
     }
 };
 
+// TODO: Implement bitWidth, byteWidth.
+
+pub fn bitWidth(t: Type) usize {
+    _ = t;
+    return 0;
+}
+
+pub fn byteWidth(t: Type) usize {
+    _ = t;
+    return 0;
+}
+
 pub const Array = struct {
     alloc: std.mem.Allocator,
 
