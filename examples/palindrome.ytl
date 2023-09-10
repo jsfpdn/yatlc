@@ -1,0 +1,55 @@
+
+// obdobne pro dalsi ciselne typy
+i32 i32_from_string([-]u8 s) {
+  i32 ret = 0;
+  bool zaporne = false;
+  i64 i = 1;
+  if ((u8 c = s[0]) == 45) { zaporne = true; c = s[i++] }
+  do {
+    i32 const = 214748364;  // == floor(2**31 / 10)
+    if (ret<=const && (ret!=const || c-48<=(zaporne??8:7)) && 48<=c<58) {
+      ret = 10*ret + (c - 48);
+    } else { @exit(1) }
+    c = s[i++];
+  } while (c != 0);
+  return zaporne ?? -ret : ret;
+}
+
+// vysledek je dynamicky alokovany a musi se kdyztak uvolnit z pameti
+[-]u8 string_from_i64(i64 n) {
+  [-]u8 temp = "-0123456789012345678";
+  if (bool zaporne = (n < 0)) { n *= -1 }
+  i64 i = 19;
+  do { temp[i--] = 48 + (@u8(n) % 10); n /= 10 } while (n > 0);
+  i64 delka = (19 - i) + (zaporne ? temp[i--] = 45; 1 : 0);
+  [-]u8 preret = @[-]u8(@malloc(8 + delka + 1));
+  @[]i64(preret)[] = delka;
+  [-]u8 ret = @[-]u8(preret[8]#);
+  for (i64 j = 0, i++; j<=delka, j++) { ret[j] = temp[i] }
+  return ret;
+}
+
+bool is_palindrome([-]u8 input_string) {
+  for (i64 i = 0; i64 j = @len(input_string)-1,
+       i < j,
+       i++; j--) {
+    if (input_string[i] != input_string[j]) { return false }
+  }
+  return true;
+}
+
+i32 main() {
+  [-]u8 s;
+  @print("your first input: ");
+  do {
+    s = @readln();
+    if (is_palindrome(s)) { @print("YES, a palindrome") } else { @print("NO, not a palindrome") };
+    @print(@[-]u8 [ 10, 0 ]);
+    @print "that was of length ";
+    @print string_from_i64(@len s);
+    @print(@[-]u8 [ 10, 0 ]);
+    @print("your next input: ");
+    @free(s);
+  } while (@len(s) != 0)
+  return 0;
+}

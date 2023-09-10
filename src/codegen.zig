@@ -10,7 +10,6 @@ const tt = tokens.TokenType;
 pub const CodeGen = struct {
     alloc: std.mem.Allocator,
 
-    globals: []const u8,
     readySegments: std.ArrayList([]const u8),
 
     segments: std.ArrayList([]const u8),
@@ -23,7 +22,6 @@ pub const CodeGen = struct {
     pub fn init(alloc: std.mem.Allocator) CodeGen {
         var c = CodeGen{
             .alloc = alloc,
-            .globals = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
             .readySegments = std.ArrayList([]const u8).init(alloc),
             .segments = std.ArrayList([]const u8).init(alloc),
             .waitingBlock = std.fmt.allocPrint(alloc, "", .{}) catch unreachable,
@@ -41,7 +39,6 @@ pub const CodeGen = struct {
         self.segments.deinit();
         self.readySegments.deinit();
 
-        self.alloc.free(self.globals);
         self.alloc.free(self.waitingBlock);
         self.alloc.free(self.currentBlock);
     }
@@ -152,70 +149,6 @@ pub const CodeGen = struct {
         var llvmFuncName = std.fmt.allocPrint(self.alloc, "@{s}.{d}", .{ funcName, self.commandNum }) catch unreachable;
         self.commandNum += 1;
         return llvmFuncName;
-    }
-
-    pub fn genPrintNumber(self: *CodeGen, number: []const u8) void {
-        var fmtStr = std.fmt.allocPrint(self.alloc, "@.fmt.{d}", .{self.commandNum}) catch unreachable;
-        defer self.alloc.free(fmtStr);
-        self.commandNum += 1;
-
-        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ 3 x i8 ] c\"%d\\00\"", .{
-            fmtStr,
-        }) catch unreachable;
-        defer self.alloc.free(fmtGlobal);
-
-        var n = std.fmt.allocPrint(self.alloc, "{s}{s}\n\n", .{ self.globals, fmtGlobal }) catch unreachable;
-        self.alloc.free(self.globals);
-        self.globals = n;
-
-        var result = self.genLLVMNameEmpty();
-        defer self.alloc.free(result);
-        self.emit(
-            std.fmt.allocPrint(
-                self.alloc,
-                "{s} = call i32 (ptr, ...) @printf(ptr noundef getelementptr ([ 3 x i8 ], [ 3 x i8 ]* {s}, i32 0, i32 0), i32 {s})",
-                .{
-                    result,
-                    fmtStr,
-                    number,
-                },
-            ) catch unreachable,
-            self.lastBlockIndex(),
-        );
-    }
-
-    pub fn genPrintString(self: *CodeGen, string: []const u8) void {
-        var fmtStr = std.fmt.allocPrint(self.alloc, "@.fmt.{d}", .{self.commandNum}) catch unreachable;
-        defer self.alloc.free(fmtStr);
-        self.commandNum += 1;
-
-        // TODO: Handle special characters: replace '\n' with '\0A'
-        var fmtGlobal = std.fmt.allocPrint(self.alloc, "{s} = constant [ {d} x i8 ] c\"{s}\\00\"", .{
-            fmtStr,
-            string.len + 1,
-            string,
-        }) catch unreachable;
-        defer self.alloc.free(fmtGlobal);
-
-        var n = std.fmt.allocPrint(self.alloc, "{s}{s}\n\n", .{ self.globals, fmtGlobal }) catch unreachable;
-        self.alloc.free(self.globals);
-        self.globals = n;
-
-        var result = self.genLLVMNameEmpty();
-        defer self.alloc.free(result);
-        self.emit(
-            std.fmt.allocPrint(
-                self.alloc,
-                "{s} = call i32 (ptr, ...) @printf(ptr noundef getelementptr ([ {d} x i8 ], [ {d} x i8 ]* {s}, i32 0, i32 0))",
-                .{
-                    result,
-                    string.len + 1,
-                    string.len + 1,
-                    fmtStr,
-                },
-            ) catch unreachable,
-            self.lastBlockIndex(),
-        );
     }
 
     pub fn emitAllocPtr(self: *CodeGen, toType: types.Type) []const u8 {
@@ -332,8 +265,6 @@ pub const CodeGen = struct {
         _ = try writer.write(CodeGen.customDefines);
         _ = try writer.write(CodeGen.customDecls);
         _ = try writer.write("\n");
-
-        _ = try writer.write(self.globals);
 
         for (self.readySegments.items) |segment| {
             _ = try writer.write(segment);
@@ -526,14 +457,44 @@ pub fn evalConstant(
         tt.B_AND => lhsInt & rhsInt,
         tt.B_OR => lhsInt | rhsInt,
         tt.B_XOR => lhsInt ^ rhsInt,
-        tt.B_RSH => if (rhsInt > 127 or rhsInt < -127)
-            0
+        tt.B_RSH => if (lhsInt >= 0)
+            (if (rhsInt > 127 or rhsInt < -127)
+                0
+            else
+                (if (rhsInt >= 0)
+                    @bitCast(@as(u128, @bitCast(lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(rhsInt)))))
+                else
+                    @bitCast(@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(-rhsInt)))))))
         else
-            @bitCast(@as(u128, @bitCast(lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(rhsInt))))),
-        tt.B_LSH => if (rhsInt > 127 or rhsInt < -127)
-            0
+            (if (rhsInt > 127)
+                (-1)
+            else
+                (if (rhsInt < -127)
+                    0
+                else
+                    @bitCast(if (rhsInt >= 0)
+                        (~(@as(u128, @bitCast(-1 - lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(rhsInt))))))
+                    else
+                        (@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(-rhsInt)))))))),
+        tt.B_LSH => if (lhsInt >= 0)
+            (if (rhsInt > 127 or rhsInt < -127)
+                0
+            else
+                (if (rhsInt >= 0)
+                    @bitCast(@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(rhsInt)))))
+                else
+                    @bitCast(@as(u128, @bitCast(lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(-rhsInt)))))))
         else
-            @bitCast(@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(rhsInt))))),
+            (if (rhsInt > 127)
+                0
+            else
+                (if (rhsInt < -127)
+                    (-1)
+                else
+                    @bitCast(if (rhsInt < 0)
+                        (~(@as(u128, @bitCast(-1 - lhsInt)) >> @as(u7, @truncate(@as(u128, @bitCast(-rhsInt))))))
+                    else
+                        (@as(u128, @bitCast(lhsInt)) << @as(u7, @truncate(@as(u128, @bitCast(rhsInt)))))))),
 
         else => unreachable,
     };

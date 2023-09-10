@@ -86,6 +86,8 @@ pub const Parser = struct {
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
     // * self.alloc.dupe to copy strings
+    // * Implement "??"
+    // * Implement conversion of floats to hexadecimal.
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
 
@@ -1042,8 +1044,8 @@ pub const Parser = struct {
             exp.semiMustFollow = true;
             exp.hasLValue = true;
             exp.lValue = llvmName;
-
             exp.rValue = self.c.genLLVMNameEmpty();
+
             self.c.emit(
                 self.createString("{s} = load {s}, ptr {s}", .{
                     exp.rValue.?,
@@ -1223,16 +1225,15 @@ pub const Parser = struct {
 
     // E^2
     fn parseTernaryExpression(self: *Parser) SyntaxError!Expression {
-        // exp is potentially a boolen condition for the ternary operator.
-        var exp = try self.parseLogicExpressions();
-        errdefer exp.destroy(self.alloc);
+        var condExp = try self.parseLogicExpressions();
+        errdefer condExp.destroy(self.alloc);
 
         var tok = self.s.peek();
         if (tok.tokenType != tt.QUESTION_MARK and tok.tokenType != tt.D_QUESTION_MARK) {
-            return exp;
+            return condExp;
         }
 
-        if (!exp.t.?.isBool()) {
+        if (!condExp.t.?.isBool()) {
             self.report(tok, reporter.Level.ERROR, "non-boolean condition in a ternary operator statement", .{});
             return SyntaxError.TypeError;
         }
@@ -1241,42 +1242,100 @@ pub const Parser = struct {
             tt.D_QUESTION_MARK => blk: {
                 self.consume(tt.D_QUESTION_MARK) catch unreachable;
 
-                var exp2 = try self.parseExpression();
-                defer exp2.destroy(self.alloc);
+                var thenExp = try self.parseExpression();
+                defer thenExp.destroy(self.alloc);
 
                 try self.consume(tt.COLON);
 
-                var exp3 = try self.parseTernaryExpression();
-                defer exp3.destroy(self.alloc);
+                var elseExp = try self.parseTernaryExpression();
+                defer elseExp.destroy(self.alloc);
 
                 // TODO: Tuck error handling away?
-                var t: *types.Type = types.leastSupertype(self.alloc, exp2.t.?, exp3.t.?) orelse {
+                var t: *types.Type = types.leastSupertype(self.alloc, thenExp.t.?, elseExp.t.?) orelse {
                     self.report(
                         tok,
                         reporter.Level.ERROR,
                         "no common supertype for '{s}' and '{s}'",
-                        .{ exp2.t.?.str(), exp3.t.?.str() },
+                        .{ thenExp.t.?.str(), elseExp.t.?.str() },
                     );
                     return SyntaxError.TypeError;
                 };
 
-                if (exp2.hasLValue and exp3.hasLValue and exp2.lt.?.equals(exp3.lt.?.*)) {
-                    if (!exp2.lt.?.isUnit()) {
-                        // TODO: Implement me.
+                var thenRes = try self.convertRep(
+                    tok,
+                    thenExp.t.?,
+                    t,
+                    ConvMode.IMPLICIT,
+                    thenExp.rValue.?,
+                    self.c.lastBlockIndex(),
+                );
+                defer self.alloc.free(thenRes);
+
+                var elseRes = try self.convertRep(
+                    tok,
+                    elseExp.t.?,
+                    t,
+                    ConvMode.IMPLICIT,
+                    thenExp.rValue.?,
+                    self.c.lastBlockIndex(),
+                );
+                defer self.alloc.free(elseRes);
+
+                var lValue = self.createString("", .{});
+                defer self.alloc.free(lValue);
+
+                if (thenExp.hasLValue and elseExp.hasLValue and thenExp.lt.?.equals(elseExp.lt.?.*)) {
+                    if (!thenExp.lt.?.isUnit()) {
+                        self.alloc.free(lValue);
+                        lValue = self.c.genLLVMNameEmpty();
+
+                        self.c.emit(
+                            self.createString("{s} = select i1 {s}, ptr {s}, ptr {s}", .{
+                                lValue,
+                                condExp.rValue.?,
+                                thenExp.lValue.?,
+                                elseExp.lValue.?,
+                            }),
+                            self.c.lastBlockIndex(),
+                        );
                     }
+
+                    condExp.destroyLValue(self.alloc);
+                    condExp.hasLValue = true;
+                    condExp.lValue = self.alloc.dupe(u8, lValue) catch unreachable;
                 }
 
-                // Destroy the previous type and replace it with the new supertype.
-                exp.destroy(self.alloc);
-                exp.t = t;
-                exp.lt = if (exp2.lt.?.equals(exp3.lt.?.*)) exp2.lt.?.clone(self.alloc) else null;
-                // TODO: Expression attribute rValue: result of `select` instruction.
-                exp.hasLValue = if (exp2.lt.?.equals(exp3.lt.?.*)) true else false;
-                // TODO: exp.hasLValue = ...
-                // TODO: exp.lValue = ...
-                exp.semiMustFollow = true;
-                exp.endsWithReturn = false;
-                break :blk exp;
+                if (t.isConstant()) {
+                    var nt = types.minimumSignedType(self.alloc, t.constant.value);
+                    t.destroy(self.alloc);
+                    t = nt;
+                }
+
+                if (!t.isUnit()) {
+                    var result = self.c.genLLVMNameEmpty();
+                    self.c.emit(
+                        self.createString("{s} = select i1 {s}, {s} {s}, {s} {s}", .{
+                            result,
+                            condExp.rValue.?,
+                            codegen.llvmType(t.*),
+                            thenRes,
+                            codegen.llvmType(t.*),
+                            elseRes,
+                        }),
+                        self.c.lastBlockIndex(),
+                    );
+
+                    condExp.destroyRValue(self.alloc);
+                    condExp.rValue = result;
+                } else {
+                    condExp.destroyRValue(self.alloc);
+                    condExp.rValue = self.createString("", .{});
+                }
+
+                condExp.t.?.destroy(self.alloc);
+                condExp.t = t;
+
+                break :blk condExp;
             },
             tt.QUESTION_MARK => blk: {
                 self.consume(tt.QUESTION_MARK) catch unreachable;
@@ -1291,7 +1350,7 @@ pub const Parser = struct {
 
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "br i1 {s}, label {s}, label {s}", .{
-                        exp.rValue.?,
+                        condExp.rValue.?,
                         thenBlockName,
                         elseBlockName,
                     }) catch unreachable,
@@ -1301,8 +1360,8 @@ pub const Parser = struct {
                 self.c.emitBlock(thenBlockName);
 
                 var thenBegin = self.s.peek();
-                var exp2 = try self.parseExpression();
-                defer exp2.destroy(self.alloc);
+                var thenExp = try self.parseExpression();
+                defer thenExp.destroy(self.alloc);
 
                 var thenBackpatchingIndex = self.c.segments.items.len - 1;
                 self.c.newSegment();
@@ -1319,8 +1378,8 @@ pub const Parser = struct {
                 self.c.emitBlock(elseBlockName);
 
                 var elseBegin = self.s.peek();
-                var exp3 = try self.parseTernaryExpression();
-                defer exp3.destroy(self.alloc);
+                var elseExp = try self.parseTernaryExpression();
+                defer elseExp.destroy(self.alloc);
 
                 var elseBackpatchingIndex = self.c.segments.items.len - 1;
 
@@ -1335,52 +1394,58 @@ pub const Parser = struct {
 
                 self.c.emitBlock(nextBlockName);
 
-                var t: *types.Type = types.leastSupertype(self.alloc, exp2.t.?, exp3.t.?) orelse {
+                var t: *types.Type = types.leastSupertype(self.alloc, thenExp.t.?, elseExp.t.?) orelse {
                     self.report(
                         tok,
                         reporter.Level.ERROR,
                         "no common supertype for '{s}' and '{s}'",
-                        .{ exp2.t.?.str(), exp3.t.?.str() },
+                        .{ thenExp.t.?.str(), elseExp.t.?.str() },
                     );
                     return SyntaxError.TypeError;
                 };
 
                 var thenConv = try self.convertRep(
                     thenBegin,
-                    exp2.t.?,
+                    thenExp.t.?,
                     t,
                     ConvMode.IMPLICIT,
-                    exp2.rValue.?,
+                    thenExp.rValue.?,
                     thenBackpatchingIndex,
                 );
                 defer self.alloc.free(thenConv);
 
                 var elseConv = try self.convertRep(
                     elseBegin,
-                    exp3.t.?,
+                    elseExp.t.?,
                     t,
                     ConvMode.IMPLICIT,
-                    exp3.rValue.?,
+                    elseExp.rValue.?,
                     elseBackpatchingIndex,
                 );
                 defer self.alloc.free(elseConv);
 
-                var result: ?[]const u8 = null;
-                defer if (result) |r| self.alloc.free(r);
+                var lValue = self.createString("", .{});
+                defer self.alloc.free(lValue);
 
-                if (exp2.hasLValue and exp3.hasLValue and exp2.lt.?.equals(exp3.lt.?.*)) {
-                    if (!exp2.lt.?.isUnit()) {
-                        result = self.c.genLLVMNameEmpty();
+                if (thenExp.hasLValue and elseExp.hasLValue and thenExp.lt.?.equals(elseExp.lt.?.*)) {
+                    if (!thenExp.lt.?.isUnit()) {
+                        self.alloc.free(lValue);
+                        lValue = self.c.genLLVMNameEmpty();
+
                         self.c.emit(
                             std.fmt.allocPrint(self.alloc, "{s} = phi ptr [ {s}, {s} ], [ {s}, {s} ]", .{
-                                result.?,
-                                exp2.lValue.?,
+                                lValue,
+                                thenExp.lValue.?,
                                 jumpFromThen,
-                                exp3.lValue.?,
+                                elseExp.lValue.?,
                                 jumpFromElse,
                             }) catch unreachable,
                             self.c.lastBlockIndex(),
                         );
+
+                        condExp.destroyLValue(self.alloc);
+                        condExp.hasLValue = true;
+                        condExp.lValue = self.alloc.dupe(u8, lValue) catch unreachable;
                     }
                 }
 
@@ -1391,12 +1456,11 @@ pub const Parser = struct {
                 }
 
                 if (!t.isUnit()) {
-                    if (result) |r| self.alloc.free(r);
-                    result = self.c.genLLVMNameEmpty();
+                    var result = self.c.genLLVMNameEmpty();
 
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = phi {s} [ {s}, {s} ], [ {s}, {s} ]", .{
-                            result.?,
+                            result,
                             codegen.llvmType(t.*),
                             thenConv,
                             jumpFromThen,
@@ -1405,26 +1469,17 @@ pub const Parser = struct {
                         }) catch unreachable,
                         self.c.lastBlockIndex(),
                     );
+
+                    condExp.destroyRValue(self.alloc);
+                    condExp.rValue = result;
                 }
 
-                // Destroy the previous type and replace it with the new supertype.
-                exp.t.?.destroy(self.alloc);
-                exp.lt.?.destroy(self.alloc);
-                exp.t = t;
-                exp.lt = if (exp2.lt.?.equals(exp3.lt.?.*)) exp2.lt.?.clone(self.alloc) else null;
+                condExp.t.?.destroy(self.alloc);
+                condExp.t = t;
+                condExp.semiMustFollow = true;
+                condExp.endsWithReturn = false;
 
-                // TODO: exp.lValue = ...
-                // TODO: exp.hasLValue = ...
-                exp.hasLValue = if (exp2.lt.?.equals(exp3.lt.?.*)) true else false;
-
-                exp.destroyRValue(self.alloc);
-                exp.rValue = result;
-
-                // TODO: exp.lValue = ...
-                exp.semiMustFollow = true;
-                exp.endsWithReturn = false;
-
-                break :blk exp;
+                break :blk condExp;
             },
             else => unreachable,
         };
@@ -2032,6 +2087,8 @@ pub const Parser = struct {
 
                 if (exp.t.?.isConstant()) {
                     exp.t.?.constant.value = -exp.t.?.constant.value;
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = self.createString("{d}", .{exp.t.?.constant.value});
                 } else {
                     var result = self.c.genLLVMNameEmpty();
                     defer self.alloc.free(result);
@@ -2312,6 +2369,8 @@ pub const Parser = struct {
                             );
                             return SyntaxError.TypeError;
                         }
+
+                        exp.lt.?.destroy(self.alloc);
                         exp.lt = exp.t.?.array.ofType.clone(self.alloc);
                         exp.t = blk: {
                             var ofType = exp.t.?.array.ofType.clone(self.alloc);
