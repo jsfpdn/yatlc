@@ -35,16 +35,33 @@ pub const Reporter = struct {
     }
 
     /// report prints out a diagnostic message and relevant info regarding the lexing error.
-    pub fn report(self: *const Reporter, tok: Token, level: Level, msg: []const u8, showLine: bool) void {
+    pub fn report(self: *const Reporter, tok: ?Token, level: Level, msg: []const u8, showLine: bool) void {
         // TODO(jsfpdn): fix reporting of multiline comments.
-        const loc = self.line(tok);
+        var loc: token.BufferLoc = undefined;
 
-        self.writer.print("{s}: {s}:{d}:{d}: {s}.\n", .{ level.str(), self.file, tok.sourceLoc.line, tok.sourceLoc.column, msg }) catch unreachable;
+        if (tok) |t| {
+            loc = self.line(t);
+            self.writer.print("{s}: {s}:{d}:{d}: {s}.\n", .{
+                level.str(),
+                self.file,
+                t.sourceLoc.line,
+                t.sourceLoc.column,
+                msg,
+            }) catch unreachable;
+        } else {
+            self.writer.print("{s}: {s}: {s}.\n", .{
+                level.str(),
+                self.file,
+                msg,
+            }) catch unreachable;
+
+            return;
+        }
         if (!showLine) return;
 
         self.writer.print("    {s}\n", .{self.contents[loc.start..loc.end]}) catch unreachable;
 
-        self.pad(' ', 5 + tok.bufferLoc.start - loc.start);
+        self.pad(' ', 5 + tok.?.bufferLoc.start - loc.start);
         self.writer.print("^\n", .{}) catch unreachable;
     }
 

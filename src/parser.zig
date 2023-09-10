@@ -122,6 +122,7 @@ pub const Parser = struct {
 
         // Open the global scope.
         try self.st.open();
+        defer self.st.close();
 
         var next = self.s.peek();
         while (next.tokenType != tt.EOF) {
@@ -150,8 +151,70 @@ pub const Parser = struct {
             }
         }
 
-        // TODO: check for main etc.
-        self.st.close();
+        var mainDefined = false;
+        it = self.st.globalIterator();
+        while (it.next()) |s| {
+            if (!s.t.isFunction()) continue;
+            if (!std.mem.eql(u8, s.name, "main")) continue;
+
+            mainDefined = s.defined;
+            var func: types.Func = s.t.func;
+
+            if (!func.retT.isNumeric()) {
+                self.report(
+                    s.location,
+                    reporter.Level.ERROR,
+                    "main function must return either i8, i16, i32, i64, u8, u16, u32 or u64",
+                    .{},
+                );
+
+                return SyntaxError.TypeError;
+            }
+
+            if (func.args.items.len == 0) break;
+
+            if (func.args.items.len != 2) {
+                self.report(
+                    s.location,
+                    reporter.Level.ERROR,
+                    "main must either accept no arguments or exactly two arguments (i32, [-][-]u8)",
+                    .{},
+                );
+
+                return SyntaxError.TypeError;
+            }
+
+            if (!func.args.items[0].t.isNumeric()) {
+                self.report(
+                    func.args.items[0].location,
+                    reporter.Level.ERROR,
+                    "type of the first argument of main must be either i8, i16, i32, i64, u8, u16, u32 or u64",
+                    .{},
+                );
+
+                return SyntaxError.TypeError;
+            }
+
+            if (!func.args.items[1].t.isArray() or
+                func.args.items[1].t.array.dimensions != 1 or
+                !func.args.items[1].t.array.ofType.isArray() or
+                !func.args.items[1].t.array.ofType.array.ofType.equals(types.Type{ .simple = types.SimpleType.U8 }))
+            {
+                self.report(
+                    func.args.items[1].location,
+                    reporter.Level.ERROR,
+                    "type of the second argument of main must be [-][-]u8",
+                    .{},
+                );
+
+                return SyntaxError.TypeError;
+            }
+        }
+
+        if (!mainDefined) {
+            self.report(null, reporter.Level.ERROR, "main function must be defined", .{});
+            return SyntaxError.TypeError;
+        }
 
         if (self.w) |w| try self.c.write(w);
     }
@@ -3499,14 +3562,12 @@ pub const Parser = struct {
         return next;
     }
 
-    fn report(self: *Parser, tok: token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype) void {
+    fn report(self: *Parser, tok: ?token.Token, level: reporter.Level, comptime fmt: []const u8, args: anytype) void {
         // TODO: When reporting, denote in what stage the error happened - scanning, parsing, typechecking, code generation?
         const msg = std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
         defer self.alloc.free(msg);
 
         if (self.r) |rep| {
-            rep.space();
-
             rep.report(tok, level, msg, true);
         }
     }
