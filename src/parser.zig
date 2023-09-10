@@ -85,8 +85,6 @@ pub const Parser = struct {
     //   simplify asserts to just a single line `try assertType(exp.t.?, BOOL, UNIT)`.
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
-    // * self.alloc.dupe to copy strings
-    // * Implement "??"
     // * Implement conversion of floats to hexadecimal.
     // * IR emitter
     //      * '\n' ~> '\0A' in strings when printing
@@ -1110,7 +1108,7 @@ pub const Parser = struct {
                 exp.t = subExp.t.?.clone(self.alloc);
 
                 exp.destroyRValue(self.alloc);
-                exp.rValue = self.createString("{s}", .{subExp.rValue.?});
+                exp.rValue = self.alloc.dupe(u8, subExp.rValue.?) catch unreachable;
 
                 // exp.lValue does not change.
                 exp.hasLValue = true;
@@ -1190,7 +1188,7 @@ pub const Parser = struct {
                 }
 
                 exp.destroyRValue(self.alloc);
-                exp.rValue = self.createString("{s}", .{rhsExp.rValue.?});
+                exp.rValue = self.alloc.dupe(u8, rhsExp.rValue.?) catch unreachable;
 
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
@@ -1220,7 +1218,7 @@ pub const Parser = struct {
         };
         self.st.insert(s) catch unreachable;
 
-        return self.createString("{s}", .{s.llvmName});
+        return self.alloc.dupe(u8, s.llvmName) catch unreachable;
     }
 
     // E^2
@@ -1334,6 +1332,8 @@ pub const Parser = struct {
 
                 condExp.t.?.destroy(self.alloc);
                 condExp.t = t;
+                condExp.semiMustFollow = true;
+                condExp.endsWithReturn = false;
 
                 break :blk condExp;
             },
@@ -1965,7 +1965,7 @@ pub const Parser = struct {
                 accResult = newAccRes;
             } else {
                 if (accResult) |ar| self.alloc.free(ar);
-                accResult = self.createString("{s}", .{result.?});
+                accResult = self.alloc.dupe(u8, result.?) catch unreachable;
             }
 
             // Replace the type of the expression with the new supertype.
@@ -1977,7 +1977,7 @@ pub const Parser = struct {
         xExp.t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL);
 
         xExp.destroyRValue(self.alloc);
-        xExp.rValue = self.createString("{s}", .{accResult.?});
+        xExp.rValue = self.alloc.dupe(u8, accResult.?) catch unreachable;
 
         xExp.destroyLValue(self.alloc);
 
@@ -2134,7 +2134,7 @@ pub const Parser = struct {
                     }
 
                     exp.destroyRValue(self.alloc);
-                    exp.rValue = self.createString("{s}", .{result});
+                    exp.rValue = self.alloc.dupe(u8, result) catch unreachable;
                 }
 
                 exp.destroyLValue(self.alloc);
@@ -2343,7 +2343,7 @@ pub const Parser = struct {
 
                     // TODO: Is exp.rValue set correctly?
                     exp.destroyRValue(self.alloc);
-                    exp.rValue = self.createString("{s}", .{exp.lValue.?});
+                    exp.rValue = self.alloc.dupe(u8, exp.lValue.?) catch unreachable;
 
                     exp.destroyLValue(self.alloc);
 
@@ -2380,7 +2380,7 @@ pub const Parser = struct {
 
                         exp.destroyLValue(self.alloc);
                         exp.hasLValue = true;
-                        exp.lValue = self.createString("{s}", .{exp.rValue.?});
+                        exp.lValue = self.alloc.dupe(u8, exp.rValue.?) catch unreachable;
 
                         var result1 = self.c.genLLVMNameEmpty();
                         self.c.emit(
@@ -2414,7 +2414,9 @@ pub const Parser = struct {
                         defer iExp.destroy(self.alloc);
 
                         if (iExp.t.?.equals(types.Type{ .simple = types.SimpleType.I64 }) or iExp.t.?.equals(types.Type{ .simple = types.SimpleType.U64 })) {
-                            indexes.append(self.createString("{s}", .{iExp.rValue.?})) catch unreachable;
+                            indexes.append(
+                                self.alloc.dupe(u8, iExp.rValue.?) catch unreachable,
+                            ) catch unreachable;
                         } else {
                             const t = types.SimpleType.create(self.alloc, types.SimpleType.I64);
                             defer t.destroy(self.alloc);
@@ -2469,7 +2471,7 @@ pub const Parser = struct {
                         continue;
                     }
 
-                    var where = self.createString("{s}", .{indexes.items[0]});
+                    var where = self.alloc.dupe(u8, indexes.items[0]) catch unreachable;
                     defer self.alloc.free(where);
 
                     for (1..exp.t.?.array.dimensions) |i| {
@@ -2512,7 +2514,7 @@ pub const Parser = struct {
                         );
 
                         self.alloc.free(where);
-                        where = self.createString("{s}", .{whereNew});
+                        where = self.alloc.dupe(u8, whereNew) catch unreachable;
                     }
 
                     var wherePtr = self.c.genLLVMNameEmpty();
@@ -2613,7 +2615,7 @@ pub const Parser = struct {
                         .t = s.t.clone(self.alloc),
                         .lt = s.t.clone(self.alloc),
                         .hasLValue = true,
-                        .lValue = self.createString("{s}", .{s.llvmName}),
+                        .lValue = self.alloc.dupe(u8, s.llvmName) catch unreachable,
                         .rValue = explicitLoad,
                         .semiMustFollow = true,
                         .endsWithReturn = false,
@@ -2627,7 +2629,7 @@ pub const Parser = struct {
                 return Expression{
                     .t = types.Constant.create(self.alloc, value),
                     .lt = types.Constant.create(self.alloc, value),
-                    .rValue = self.createString("{s}", .{int.symbol}),
+                    .rValue = self.alloc.dupe(u8, int.symbol) catch unreachable,
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2639,7 +2641,7 @@ pub const Parser = struct {
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
                     .lt = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
-                    .rValue = self.createString("{s}", .{int.symbol}),
+                    .rValue = self.alloc.dupe(u8, int.symbol) catch unreachable,
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2664,7 +2666,7 @@ pub const Parser = struct {
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
                     .lt = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
-                    .rValue = self.createString("{s}", .{value}),
+                    .rValue = self.alloc.dupe(u8, value) catch unreachable,
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2714,7 +2716,7 @@ pub const Parser = struct {
 
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.U8),
-                    .rValue = self.createString("{s}", .{char.symbol}),
+                    .rValue = self.alloc.dupe(u8, char.symbol) catch unreachable,
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2840,7 +2842,7 @@ pub const Parser = struct {
             var width = ptrT.array.dimensions;
 
             var tSize = self.createString("{d}", .{width});
-            var newTSize = self.createString("{s}", .{tSize});
+            var newTSize: []const u8 = self.alloc.dupe(u8, tSize) catch unreachable;
 
             defer {
                 self.alloc.free(tSize);
@@ -2881,7 +2883,7 @@ pub const Parser = struct {
                 );
 
                 self.alloc.free(tSize);
-                tSize = self.createString("{s}", .{newTSize});
+                tSize = self.alloc.dupe(u8, newTSize) catch unreachable;
             }
 
             try self.consume(tt.RPAREN);
@@ -2930,12 +2932,12 @@ pub const Parser = struct {
                 );
 
                 self.alloc.free(place);
-                place = self.createString("{s}", .{newPointer});
+                place = self.alloc.dupe(u8, newPointer) catch unreachable;
             }
 
             return Expression{
                 .t = ptrT.clone(self.alloc),
-                .rValue = self.createString("{s}", .{place}),
+                .rValue = self.alloc.dupe(u8, place) catch unreachable,
                 .semiMustFollow = true,
             };
         }
@@ -3032,7 +3034,7 @@ pub const Parser = struct {
                 self.c.lastBlockIndex(),
             );
         } else {
-            whatToFree = self.createString("{s}", .{exp.rValue.?});
+            whatToFree = self.alloc.dupe(u8, exp.rValue.?) catch unreachable;
         }
 
         self.c.emit(
@@ -3549,7 +3551,7 @@ pub const Parser = struct {
         blockIndex: usize,
     ) ConvErr![]const u8 {
         if (from.equals(to.*)) {
-            return self.createString("{s}", .{what});
+            return self.alloc.dupe(u8, what) catch unreachable;
         }
 
         if (from.isUnit()) {
@@ -3671,7 +3673,7 @@ pub const Parser = struct {
 
             if (to.isArray()) {
                 self.alloc.free(result);
-                return self.createString("{s}", .{what});
+                return self.alloc.dupe(u8, what) catch unreachable;
             }
 
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
@@ -3859,7 +3861,7 @@ pub const Parser = struct {
             if (conv == ConvMode.IMPLICIT) return ConvErr.NoImplicit;
             if (to.isNumeric()) {
                 // `to` is numeric and has the same bit width as from.
-                return self.createString("{s}", .{what});
+                return self.alloc.dupe(u8, what) catch unreachable;
             }
 
             if (to.isBool() and conv == ConvMode.EXPLICIT) {
