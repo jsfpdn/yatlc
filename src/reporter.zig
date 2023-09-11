@@ -21,6 +21,7 @@ pub const Level = enum {
     }
 };
 
+/// Reporter is a helper struct to report errors to the user.
 pub const Reporter = struct {
     contents: []const u8,
     file: []const u8,

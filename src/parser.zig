@@ -12,6 +12,7 @@ const tt = token.TokenType;
 
 pub const SyntaxError = error{ UnexpectedToken, TypeError, OutOfMemory, RecoverableError };
 
+/// Expression describes expressions in yatl.
 pub const Expression = struct {
     t: ?*types.Type = null,
     lt: ?*types.Type = null,
@@ -24,6 +25,7 @@ pub const Expression = struct {
     semiMustFollow: bool = false,
     endsWithReturn: bool = false,
 
+    /// Destroy deallocates all the related data structures.
     pub fn destroy(self: Expression, alloc: std.mem.Allocator) void {
         if (self.t) |t| t.destroy(alloc);
         if (self.lt) |lt| lt.destroy(alloc);
@@ -65,6 +67,7 @@ pub const Expression = struct {
     }
 };
 
+/// Parser parses the yatl code.
 pub const Parser = struct {
     s: scanner.Scanner,
     r: ?reporter.Reporter,
@@ -87,6 +90,9 @@ pub const Parser = struct {
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
 
+    /// Init prepares the parser for parsing.
+    /// The caller is responsible for calling `deinit()` after the parser is not needed anymore
+    /// to release related memory.
     pub fn init(
         alloc: std.mem.Allocator,
         s: scanner.Scanner,
@@ -109,12 +115,14 @@ pub const Parser = struct {
         };
     }
 
+    /// deinit releases all the related data structures.
     pub fn deinit(self: *Parser) void {
         self.st.deinit();
         self.breakStack.deinit();
         self.contStack.deinit();
     }
 
+    /// parse parses the source code and writes the LLVM IR to the writer, if successful.
     pub fn parse(self: *Parser) !void {
         defer self.c.deinit();
 
@@ -132,6 +140,16 @@ pub const Parser = struct {
         }
 
         // Report any declared but not defined functions.
+        try self.assertAllDefined();
+
+        // Check definition of main.
+        try self.assertMainDefined();
+
+        if (self.w) |w| try self.c.write(w);
+    }
+
+    /// assertAllDefined asserts that all declared functions are defined.
+    fn assertAllDefined(self: *Parser) SyntaxError!void {
         var it = self.st.globalIterator();
         while (it.next()) |s| {
             switch (s.t.*) {
@@ -150,9 +168,13 @@ pub const Parser = struct {
                 else => {},
             }
         }
+    }
 
+    /// assertMainDefined asserts that the main function is properly defined.
+    fn assertMainDefined(self: *Parser) SyntaxError!void {
         var mainDefined = false;
-        it = self.st.globalIterator();
+        var it = self.st.globalIterator();
+
         while (it.next()) |s| {
             if (!s.t.isFunction()) continue;
             if (!std.mem.eql(u8, s.name, "main")) continue;
@@ -215,235 +237,18 @@ pub const Parser = struct {
             self.report(null, reporter.Level.ERROR, "main function must be defined", .{});
             return SyntaxError.TypeError;
         }
-
-        if (self.w) |w| try self.c.write(w);
     }
 
+    /// parseTopLevelStatement parses a top-level statements - global variables, functions
+    /// declarations and function definitions.
     fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
-        // 1) global variable definition: <type> <ident> = <expr>;
-        // 2) (forward) function declaration: <type> <ident>(<arglist>);
-        // 3) function definition: <type> <ident>(<arglist>) <body>
-
         const t = try self.parseType();
         const ident = try self.consumeGet(tt.IDENT);
 
         var next = self.s.next();
         switch (next.tokenType) {
-            tt.ASSIGN => {
-                // TODO: Emit code for global variable declaration.
-                errdefer t.destroy(self.alloc);
-
-                var exp = try self.parseSubExpression();
-                defer exp.destroy(self.alloc);
-
-                const value = try self.convertRep(next, exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex());
-                _ = value;
-
-                _ = try self.declare(ident.symbol, t, ident, true);
-
-                try self.consume(tt.SEMICOLON);
-            },
-            tt.LPAREN => {
-                self.c.newSegment();
-
-                var ft = self.alloc.create(types.Type) catch unreachable;
-                ft.* = types.Type{ .func = types.Func.init(self.alloc, t) };
-                defer ft.destroy(self.alloc);
-
-                ft.func.args = try self.parseArgList();
-                var llvmFuncName: []const u8 = "";
-                defer self.alloc.free(llvmFuncName);
-
-                if (self.st.get(ident.symbol)) |func| {
-                    llvmFuncName = self.alloc.dupe(u8, func.llvmName) catch unreachable;
-                } else {
-                    llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
-                }
-
-                var fs = symbols.Symbol{
-                    .name = ident.symbol,
-                    .llvmName = self.alloc.dupe(u8, llvmFuncName) catch unreachable,
-                    .location = ident,
-                    .t = ft.clone(self.alloc),
-                    .defined = false,
-                };
-                defer fs.destroy(self.alloc);
-
-                // Check that if there's a symbol with the same name, it must be a function with identical
-                // argument types that has been declared but not defined yet.
-                if (self.st.get(ident.symbol)) |s| {
-                    if (s.defined) {
-                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
-                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
-                        return SyntaxError.TypeError;
-                    }
-
-                    switch (s.t.*) {
-                        types.TypeTag.func => |otherFunc| {
-                            ft.func.defines(otherFunc) catch |err| {
-                                switch (err) {
-                                    types.Func.DefinitionErrors.ArgTypeMismatch => {
-                                        if (fs.defined) {
-                                            self.report(
-                                                fs.location,
-                                                reporter.Level.ERROR,
-                                                "definition of '{s}' does not match its declaration",
-                                                .{fs.name},
-                                            );
-                                        } else {
-                                            self.report(
-                                                fs.location,
-                                                reporter.Level.ERROR,
-                                                "redaclaration of '{s}' does not match the former declaration",
-                                                .{fs.name},
-                                            );
-                                        }
-                                        self.report(
-                                            s.location,
-                                            reporter.Level.NOTE,
-                                            "'{s}' first declared here",
-                                            .{fs.name},
-                                        );
-                                        // TODO: Make error reporting better - show where the mismatch is.
-                                    },
-                                }
-
-                                // TODO: Return better error? We need to return with error
-                                // in order to destroy all the data structures.
-                                return SyntaxError.TypeError;
-                            };
-
-                            // Upsert the declared function with it's definition in the symbol table.
-                            self.st.upsert(fs.clone(self.alloc));
-                        },
-                        else => {
-                            self.report(
-                                fs.location,
-                                reporter.Level.ERROR,
-                                "function '{s}' shadows global variable",
-                                .{fs.name},
-                            );
-                            // TODO: Return better error? We need to return with error
-                            // in order to destroy all the data structures.
-                            return SyntaxError.TypeError;
-                        },
-                    }
-                } else {
-                    // SymbolAlreadyExists cannot occur since we check it above^.
-                    self.st.insert(fs.clone(self.alloc)) catch unreachable;
-                }
-
-                // Try to parse the function body if it is a function definition.
-                next = self.s.peek();
-                if (next.tokenType == tt.LBRACE) {
-                    const sig = codegen.signature(self.alloc, llvmFuncName, ft.func.args, t.*);
-                    self.c.emitA(sig);
-
-                    self.c.emitInit(std.fmt.allocPrint(self.alloc, "{{", .{}) catch unreachable);
-                    // Open a new scope just for the function arguments. This way,
-                    // arguments can be shadowed in the function body.
-                    try self.st.open();
-
-                    // Set the expected type of the returned value.
-                    self.returnType = t.clone(self.alloc);
-                    defer self.returnType.?.destroy(self.alloc);
-
-                    // Add the arguments to the new scope.
-                    fs.t.func.namedParams = true;
-                    for (fs.t.func.args.items) |arg| {
-                        var paramAlloc = self.c.genLLVMNameEmpty();
-
-                        if (std.mem.eql(u8, arg.name, "")) {
-                            if (fs.t.func.namedParams) {
-                                self.report(
-                                    fs.location,
-                                    reporter.Level.ERROR,
-                                    "function definition of '{s}' must have named arguments",
-                                    .{fs.name},
-                                );
-                            }
-                            fs.t.func.namedParams = false;
-                        } else {
-                            var newArg = arg.clone(self.alloc);
-                            self.alloc.free(newArg.llvmName);
-                            newArg.llvmName = paramAlloc;
-
-                            self.st.insert(newArg) catch |err| switch (err) {
-                                symbols.SymbolError.SymbolAlreadyExists => {
-                                    self.report(
-                                        fs.location,
-                                        reporter.Level.ERROR,
-                                        "cannot define 2 function arguments with the same name",
-                                        .{},
-                                    );
-                                    // Destroy the new argument immediately since we need to move on with the parsing.
-                                    newArg.destroy(self.alloc);
-                                },
-                                symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
-                            };
-                        }
-
-                        var llvmType = codegen.llvmType(arg.t.*);
-
-                        self.c.emitInit(std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{ paramAlloc, llvmType }) catch unreachable);
-                        self.c.emitInit(std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmType, arg.llvmName, paramAlloc }) catch unreachable);
-                    }
-
-                    self.c.newSegment();
-
-                    var bl = self.c.genLLVMName("label");
-                    defer self.alloc.free(bl);
-
-                    self.c.emit(
-                        std.fmt.allocPrint(self.alloc, "br label {s}", .{bl}) catch unreachable,
-                        self.c.lastBlockIndex(),
-                    );
-
-                    self.c.emitBlock(bl);
-
-                    var begin = self.s.peek();
-                    var exp = try self.parseBody();
-                    defer exp.destroy(self.alloc);
-
-                    if (!exp.endsWithReturn) {
-                        if (self.returnType.?.isUnit()) {
-                            self.c.emit(
-                                std.fmt.allocPrint(self.alloc, "ret void", .{}) catch unreachable,
-                                self.c.lastBlockIndex(),
-                            );
-                        } else {
-                            var retVal = try self.convertRep(
-                                begin,
-                                exp.t.?,
-                                self.returnType.?,
-                                ConvMode.IMPLICIT,
-                                exp.rValue.?,
-                                self.c.lastBlockIndex(),
-                            );
-                            defer self.alloc.free(retVal);
-
-                            self.c.emit(
-                                std.fmt.allocPrint(self.alloc, "ret {s} {s}", .{ codegen.llvmType(self.returnType.?.*), retVal }) catch unreachable,
-                                self.c.lastBlockIndex(),
-                            );
-                        }
-                    }
-
-                    // Close the scope just for the function arguments.
-                    self.st.close();
-
-                    self.c.emitA(std.fmt.allocPrint(self.alloc, "}}\n", .{}) catch unreachable);
-                    self.c.waits = false;
-
-                    fs.defined = true;
-                    self.st.upsert(fs.clone(self.alloc));
-
-                    self.c.concatActiveSegments();
-                } else {
-                    try self.consume(tt.SEMICOLON);
-                    self.c.concatActiveSegments();
-                }
-            },
+            tt.ASSIGN => try self.parseGlobalVariable(ident, t),
+            tt.LPAREN => try self.parseFunction(ident, t),
             else => {
                 self.report(
                     next,
@@ -456,8 +261,240 @@ pub const Parser = struct {
         }
     }
 
+    /// Parses a global variable.
+    fn parseGlobalVariable(self: *Parser, ident: token.Token, t: *types.Type) SyntaxError!void {
+        // TODO: Emit code for global variable declaration.
+        errdefer t.destroy(self.alloc);
+
+        var next = self.s.peek();
+        var exp = try self.parseSubExpression();
+        defer exp.destroy(self.alloc);
+
+        const value = try self.convertRep(next, exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex());
+        _ = value;
+
+        _ = try self.declare(ident.symbol, t, ident, true);
+
+        try self.consume(tt.SEMICOLON);
+    }
+
+    /// Parses a function - either a function declaration or a function definition with a body.
+    fn parseFunction(self: *Parser, ident: token.Token, retT: *types.Type) SyntaxError!void {
+        self.c.newSegment();
+
+        var ft = self.alloc.create(types.Type) catch unreachable;
+        ft.* = types.Type{ .func = types.Func.init(self.alloc, retT) };
+        defer ft.destroy(self.alloc);
+
+        ft.func.args = try self.parseArgList();
+        var llvmFuncName: []const u8 = "";
+        defer self.alloc.free(llvmFuncName);
+
+        if (self.st.get(ident.symbol)) |func| {
+            llvmFuncName = self.alloc.dupe(u8, func.llvmName) catch unreachable;
+        } else {
+            llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
+        }
+
+        var fs = symbols.Symbol{
+            .name = ident.symbol,
+            .llvmName = self.alloc.dupe(u8, llvmFuncName) catch unreachable,
+            .location = ident,
+            .t = ft.clone(self.alloc),
+            .defined = false,
+        };
+        defer fs.destroy(self.alloc);
+
+        // Check that if there's a symbol with the same name, it must be a function with identical
+        // argument types that has been declared but not defined yet.
+        try self.insertFuncSymbol(fs);
+
+        // Try to parse the function body if it is a function definition.
+        var next = self.s.peek();
+        if (next.tokenType == tt.LBRACE) {
+            try self.parseFunctionBody(fs);
+        } else {
+            try self.consume(tt.SEMICOLON);
+            self.c.concatActiveSegments();
+        }
+    }
+
+    /// Insert a function symbol into the symbol table and report the error if some occurs.
+    fn insertFuncSymbol(self: *Parser, fs: symbols.Symbol) SyntaxError!void {
+        if (self.st.get(fs.name)) |s| {
+            if (s.defined) {
+                self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
+                self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
+                return SyntaxError.TypeError;
+            }
+
+            switch (s.t.*) {
+                types.TypeTag.func => |otherFunc| {
+                    fs.t.func.defines(otherFunc) catch |err| {
+                        switch (err) {
+                            types.Func.DefinitionErrors.ArgTypeMismatch => {
+                                if (fs.defined) {
+                                    self.report(
+                                        fs.location,
+                                        reporter.Level.ERROR,
+                                        "definition of '{s}' does not match its declaration",
+                                        .{fs.name},
+                                    );
+                                } else {
+                                    self.report(
+                                        fs.location,
+                                        reporter.Level.ERROR,
+                                        "redaclaration of '{s}' does not match the former declaration",
+                                        .{fs.name},
+                                    );
+                                }
+                                self.report(
+                                    s.location,
+                                    reporter.Level.NOTE,
+                                    "'{s}' first declared here",
+                                    .{fs.name},
+                                );
+                                // TODO: Make error reporting better - show where the mismatch is.
+                            },
+                        }
+
+                        // TODO: Return better error? We need to return with error
+                        // in order to destroy all the data structures.
+                        return SyntaxError.TypeError;
+                    };
+
+                    // Upsert the declared function with it's definition in the symbol table.
+                    self.st.upsert(fs.clone(self.alloc));
+                },
+                else => {
+                    self.report(
+                        fs.location,
+                        reporter.Level.ERROR,
+                        "function '{s}' shadows global variable",
+                        .{fs.name},
+                    );
+                    // TODO: Return better error? We need to return with error
+                    // in order to destroy all the data structures.
+                    return SyntaxError.TypeError;
+                },
+            }
+        } else {
+            // SymbolAlreadyExists cannot occur since we check it above^.
+            self.st.insert(fs.clone(self.alloc)) catch unreachable;
+        }
+    }
+
+    /// Parse a function body.
+    fn parseFunctionBody(self: *Parser, funcSymbol: symbols.Symbol) SyntaxError!void {
+        var fs = funcSymbol;
+
+        self.c.emitSignature(fs.t.func, fs.llvmName);
+
+        self.c.emitInit(std.fmt.allocPrint(self.alloc, "{{", .{}) catch unreachable);
+        // Open a new scope just for the function arguments. This way,
+        // arguments can be shadowed in the function body.
+        try self.st.open();
+
+        // Set the expected type of the returned value.
+        self.returnType = fs.t.func.retT.clone(self.alloc);
+        defer self.returnType.?.destroy(self.alloc);
+
+        // Add the arguments to the new scope.
+        fs.t.func.namedParams = true;
+        for (fs.t.func.args.items) |arg| {
+            var paramAlloc = self.c.genLLVMNameEmpty();
+
+            if (std.mem.eql(u8, arg.name, "")) {
+                if (fs.t.func.namedParams) {
+                    self.report(
+                        fs.location,
+                        reporter.Level.ERROR,
+                        "function definition of '{s}' must have named arguments",
+                        .{fs.name},
+                    );
+                }
+                fs.t.func.namedParams = false;
+            } else {
+                var newArg = arg.clone(self.alloc);
+                self.alloc.free(newArg.llvmName);
+                newArg.llvmName = paramAlloc;
+
+                self.st.insert(newArg) catch |err| switch (err) {
+                    symbols.SymbolError.SymbolAlreadyExists => {
+                        self.report(
+                            fs.location,
+                            reporter.Level.ERROR,
+                            "cannot define 2 function arguments with the same name",
+                            .{},
+                        );
+                        // Destroy the new argument immediately since we need to move on with the parsing.
+                        newArg.destroy(self.alloc);
+                    },
+                    symbols.SymbolError.OutOfMemory => return SyntaxError.OutOfMemory,
+                };
+            }
+
+            var llvmType = codegen.llvmType(arg.t.*);
+
+            self.c.emitInit(std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{ paramAlloc, llvmType }) catch unreachable);
+            self.c.emitInit(std.fmt.allocPrint(self.alloc, "store {s} {s}, ptr {s}", .{ llvmType, arg.llvmName, paramAlloc }) catch unreachable);
+        }
+
+        self.c.newSegment();
+
+        var bl = self.c.genLLVMName("label");
+        defer self.alloc.free(bl);
+
+        self.c.emit(
+            std.fmt.allocPrint(self.alloc, "br label {s}", .{bl}) catch unreachable,
+            self.c.lastBlockIndex(),
+        );
+
+        self.c.emitBlock(bl);
+
+        var begin = self.s.peek();
+        var exp = try self.parseBody();
+        defer exp.destroy(self.alloc);
+
+        if (!exp.endsWithReturn) {
+            if (self.returnType.?.isUnit()) {
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "ret void", .{}) catch unreachable,
+                    self.c.lastBlockIndex(),
+                );
+            } else {
+                var retVal = try self.convertRep(
+                    begin,
+                    exp.t.?,
+                    self.returnType.?,
+                    ConvMode.IMPLICIT,
+                    exp.rValue.?,
+                    self.c.lastBlockIndex(),
+                );
+                defer self.alloc.free(retVal);
+
+                self.c.emit(
+                    std.fmt.allocPrint(self.alloc, "ret {s} {s}", .{ codegen.llvmType(self.returnType.?.*), retVal }) catch unreachable,
+                    self.c.lastBlockIndex(),
+                );
+            }
+        }
+
+        // Close the scope just for the function arguments.
+        self.st.close();
+
+        self.c.emitA(std.fmt.allocPrint(self.alloc, "}}\n", .{}) catch unreachable);
+        self.c.waits = false;
+
+        fs.defined = true;
+        self.st.upsert(fs.clone(self.alloc));
+
+        self.c.concatActiveSegments();
+    }
+
+    /// Parse function's argument list. LPAREN is already consumed,
+    /// scanner must point to the type of the first argument.
     fn parseArgList(self: *Parser) SyntaxError!std.ArrayList(symbols.Symbol) {
-        // LPAREN is already consumed, scanner must point to the type of the first argument.
         var expectComma = false;
         var next = self.s.peek();
 
@@ -559,7 +596,7 @@ pub const Parser = struct {
         };
     }
 
-    // E
+    // Parse a top-level expression -- loops, ifs, returns, breaks, continues.
     pub fn parseExpression(self: *Parser) SyntaxError!Expression {
         var exp: ?Expression = null;
         errdefer if (exp) |e| e.destroy(self.alloc);
@@ -639,6 +676,7 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Parse an if expression.
     fn parseIf(self: *Parser) SyntaxError!Expression {
         try self.consume(tt.IF);
         const lparen = try self.consumeGet(tt.LPAREN);
@@ -728,6 +766,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a for loop expression.
     fn parseFor(self: *Parser) SyntaxError!Expression {
         self.st.open() catch unreachable;
         defer self.st.close();
@@ -814,6 +853,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a while loop expression.
     fn parseWhile(self: *Parser) SyntaxError!Expression {
         self.consume(tt.WHILE) catch unreachable;
 
@@ -877,6 +917,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a do-while loop expression.
     fn parseDoWhile(self: *Parser) SyntaxError!Expression {
         self.consume(tt.DO) catch unreachable;
 
@@ -945,6 +986,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a body.
     fn parseBody(self: *Parser) SyntaxError!Expression {
         self.st.open() catch unreachable;
         defer self.st.close();
@@ -966,6 +1008,7 @@ pub const Parser = struct {
         return exp;
     }
 
+    /// Parse a return expression.
     fn parseReturn(self: *Parser) SyntaxError!Expression {
         const ret = self.consumeGet(tt.RETURN) catch unreachable;
 
@@ -1033,6 +1076,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a break expression.
     fn parseBreak(self: *Parser) SyntaxError!Expression {
         const br = self.consumeGet(tt.BREAK) catch unreachable;
 
@@ -1059,6 +1103,7 @@ pub const Parser = struct {
         };
     }
 
+    /// Parse a continue expression.
     fn parseContinue(self: *Parser) SyntaxError!Expression {
         const cont = self.consumeGet(tt.CONTINUE) catch unreachable;
 
@@ -1085,7 +1130,7 @@ pub const Parser = struct {
         };
     }
 
-    // E^1
+    // Parse declarations and assignments.
     fn parseSubExpression(self: *Parser) SyntaxError!Expression {
         var exp = Expression{};
         errdefer exp.destroy(self.alloc);
@@ -1110,6 +1155,7 @@ pub const Parser = struct {
             errdefer self.alloc.free(llvmName);
 
             exp.t = identType.?.clone(self.alloc);
+            exp.lt = identType.?.clone(self.alloc);
             exp.semiMustFollow = true;
             exp.hasLValue = true;
             exp.lValue = llvmName;
@@ -1320,9 +1366,9 @@ pub const Parser = struct {
         return exp;
     }
 
-    // Defines an identifier in te currently open scope. If a symbol with the same identifier
-    // is already defined in the current scope, error is logged instead. Returns the name of the identifier
-    // in the LLVM IR.
+    /// Defines an identifier in te currently open scope. If a symbol with the same identifier
+    /// is already defined in the current scope, error is logged instead. Returns the name of the identifier
+    /// in the LLVM IR.
     fn declare(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token, defined: bool) SyntaxError![]const u8 {
         if (self.st.declared(ident)) {
             var prevDef = self.st.get(ident).?;
@@ -1341,7 +1387,7 @@ pub const Parser = struct {
         return self.alloc.dupe(u8, s.llvmName) catch unreachable;
     }
 
-    // E^2
+    // Parse ternary expressions.
     fn parseTernaryExpression(self: *Parser) SyntaxError!Expression {
         var condExp = try self.parseLogicExpressions();
         errdefer condExp.destroy(self.alloc);
@@ -1605,7 +1651,7 @@ pub const Parser = struct {
         };
     }
 
-    // E^3, binary and, or, ||, &&
+    // Parse binary and, or, || and &&.
     fn parseLogicExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseNot();
 
@@ -1921,7 +1967,7 @@ pub const Parser = struct {
         }
     }
 
-    // E^4, unary not
+    // Parse unary not.
     fn parseNot(self: *Parser) SyntaxError!Expression {
         const tok = self.s.peek();
         if (tok.tokenType == tt.NOT) {
@@ -1955,7 +2001,7 @@ pub const Parser = struct {
         return self.parseRelationalExpression();
     }
 
-    // E^5, ==, !=, >, <, >=, =<
+    /// Parse relational operators.
     fn parseRelationalExpression(self: *Parser) SyntaxError!Expression {
         var xExp = try self.parseArithmeticExpression();
         errdefer xExp.destroy(self.alloc);
@@ -2109,7 +2155,7 @@ pub const Parser = struct {
         return xExp;
     }
 
-    // E^6, +, -, >>, <<, &, ^, |
+    // Parse +, -, >>, <<, &, ^, |. (E^6)
     fn parseArithmeticExpression(self: *Parser) SyntaxError!Expression {
         var xExp = try self.parseUnaryOperators();
         errdefer xExp.destroy(self.alloc);
@@ -2193,7 +2239,7 @@ pub const Parser = struct {
         return xExp;
     }
 
-    // E^7, -, !
+    /// Parse -, ! (E^7)
     fn parseUnaryOperators(self: *Parser) SyntaxError!Expression {
         const tok = self.s.peek();
         switch (tok.tokenType) {
@@ -2306,7 +2352,7 @@ pub const Parser = struct {
         }
     }
 
-    // E^8, *, /, %
+    /// Parse *, /, %. (E^8)
     fn parseArithmeticExpressionsLower(self: *Parser) SyntaxError!Expression {
         var xExp = try self.parseArrayIndexingAndPrefixExpressions();
         errdefer xExp.destroy(self.alloc);
@@ -2397,7 +2443,7 @@ pub const Parser = struct {
         return xExp;
     }
 
-    // E^9, array indexing and ++, --, #
+    // Parse array indexing and ++, -- and #. (E^9)
     fn parseArrayIndexingAndPrefixExpressions(self: *Parser) SyntaxError!Expression {
         var exp = try self.parseI();
         errdefer exp.destroy(self.alloc);
@@ -2689,6 +2735,7 @@ pub const Parser = struct {
         }
     }
 
+    /// Parse identificators, parenthesis, constants and builtins.
     fn parseI(self: *Parser) SyntaxError!Expression {
         var next = self.s.peek();
         switch (next.tokenType) {
@@ -2907,6 +2954,7 @@ pub const Parser = struct {
         unreachable;
     }
 
+    /// Parse type casting.
     fn parseCast(self: *Parser, newT: *types.Type) SyntaxError!Expression {
         const loc = self.s.peek();
 
@@ -2928,6 +2976,7 @@ pub const Parser = struct {
         return cExp;
     }
 
+    /// Parse builtin function calls.
     fn parseBuiltinCall(self: *Parser) SyntaxError!Expression {
         const builtinTok = self.s.next();
 

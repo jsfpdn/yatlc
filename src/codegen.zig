@@ -7,6 +7,7 @@ const symbols = @import("symbols.zig");
 
 const tt = tokens.TokenType;
 
+/// CodeGen is responsible for maintaining the LLVM IR.
 pub const CodeGen = struct {
     alloc: std.mem.Allocator,
 
@@ -19,6 +20,8 @@ pub const CodeGen = struct {
     currentBlock: []const u8,
     waits: bool,
 
+    /// init creates the CodeGen struct. The caller must call `deinit` to destroy
+    /// all the related structures after using CodeGen.
     pub fn init(alloc: std.mem.Allocator) CodeGen {
         var c = CodeGen{
             .alloc = alloc,
@@ -32,6 +35,7 @@ pub const CodeGen = struct {
         return c;
     }
 
+    /// deinit destroys all the related structures.
     pub fn deinit(self: *CodeGen) void {
         for (self.segments.items) |s| self.alloc.free(s);
         for (self.readySegments.items) |s| self.alloc.free(s);
@@ -43,6 +47,7 @@ pub const CodeGen = struct {
         self.alloc.free(self.currentBlock);
     }
 
+    /// newSegment creates a new segment to generate IR into.
     pub fn newSegment(self: *CodeGen) void {
         var s = std.fmt.allocPrint(self.alloc, "", .{}) catch unreachable;
         self.segments.append(s) catch unreachable;
@@ -69,6 +74,7 @@ pub const CodeGen = struct {
     }
 
     /// emitA takes a string and appends it immediately after the contents of the last segment.
+    /// This function destroys the allocated string passed in.
     pub fn emitA(self: *CodeGen, string: []const u8) void {
         defer self.alloc.free(string);
 
@@ -79,7 +85,7 @@ pub const CodeGen = struct {
     }
 
     /// emitInit takes a string, adds two spaces in front and a newline after and appends it
-    /// after the contents of the first segment.
+    /// after the contents of the first segment. This function destroys the allocated string passed in.
     pub fn emitInit(self: *CodeGen, string: []const u8) void {
         defer self.alloc.free(string);
 
@@ -127,22 +133,26 @@ pub const CodeGen = struct {
         self.segments.items[index] = ns;
     }
 
+    /// lastBlockIndex returns the index of the last LLVM block.
     pub fn lastBlockIndex(self: *CodeGen) usize {
         return self.segments.items.len - 1;
     }
 
+    /// genLLVMName generates a unique LLVM name based on `name`.
     pub fn genLLVMName(self: *CodeGen, name: []const u8) []const u8 {
         var llvmName = std.fmt.allocPrint(self.alloc, "%{s}.{d}", .{ name, self.commandNum }) catch unreachable;
         self.commandNum += 1;
         return llvmName;
     }
 
+    /// genLLVMNameEmpty generates a unique LLVM name.
     pub fn genLLVMNameEmpty(self: *CodeGen) []const u8 {
         var llvmName = std.fmt.allocPrint(self.alloc, "%x{d}", .{self.commandNum}) catch unreachable;
         self.commandNum += 1;
         return llvmName;
     }
 
+    /// genLLVMFuncName generates a unique LLVM name for a function based on `funcName`.
     pub fn genLLVMFuncName(self: *CodeGen, funcName: []const u8) []const u8 {
         if (std.mem.eql(u8, funcName, "main")) return std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable;
 
@@ -163,6 +173,35 @@ pub const CodeGen = struct {
         );
 
         return result;
+    }
+
+    /// emitSignature constructs and emits LLVM IR of the function's signature.
+    pub fn emitSignature(self: *CodeGen, func: types.Func, llvmName: []const u8) void {
+        var sig = std.fmt.allocPrint(
+            self.alloc,
+            "define {s} {s}(",
+            .{ llvmType(func.retT.*), llvmName },
+        ) catch unreachable;
+
+        for (func.args.items, 1..) |arg, i| {
+            var n = std.fmt.allocPrint(
+                self.alloc,
+                "{s}{s} {s}",
+                .{ sig, llvmType(arg.t.*), arg.llvmName },
+            ) catch unreachable;
+            self.alloc.free(sig);
+
+            if (i < func.args.items.len) {
+                sig = std.fmt.allocPrint(self.alloc, "{s}, ", .{n}) catch unreachable;
+                self.alloc.free(n);
+            } else {
+                sig = n;
+            }
+        }
+
+        defer self.alloc.free(sig);
+
+        self.emitA(std.fmt.allocPrint(self.alloc, "{s})", .{sig}) catch unreachable);
     }
 
     const customDefines =
@@ -261,6 +300,8 @@ pub const CodeGen = struct {
         \\declare void @exit(i32)
         \\
     ;
+
+    /// write writes all LLVM IR to the writer.
     pub fn write(self: *CodeGen, writer: std.fs.File.Writer) !void {
         _ = try writer.write(CodeGen.customDefines);
         _ = try writer.write(CodeGen.customDecls);
@@ -289,24 +330,9 @@ pub const CodeGen = struct {
     }
 };
 
-pub fn signature(alloc: std.mem.Allocator, name: []const u8, args: std.ArrayList(symbols.Symbol), retT: types.Type) []const u8 {
-    var sig = std.fmt.allocPrint(alloc, "define {s} {s}(", .{ llvmType(retT), name }) catch unreachable;
-
-    for (args.items, 1..) |arg, i| {
-        var n = std.fmt.allocPrint(alloc, "{s}{s} {s}", .{ sig, llvmType(arg.t.*), arg.llvmName }) catch unreachable;
-        alloc.free(sig);
-
-        if (i < args.items.len) {
-            sig = std.fmt.allocPrint(alloc, "{s}, ", .{n}) catch unreachable;
-            alloc.free(n);
-        } else {
-            sig = n;
-        }
-    }
-    defer alloc.free(sig);
-    return std.fmt.allocPrint(alloc, "{s})", .{sig}) catch unreachable;
-}
-
+/// funcCall constructs a string with the LLVM IR for a function call to the function with the name
+/// `llvmFuncName`, passing arguments `llvmParamNames` of types as in `llvmArgTypes` and returning
+/// value of type `llvmRetType`.
 pub fn funcCall(
     alloc: std.mem.Allocator,
     llvmRetType: []const u8,
@@ -342,6 +368,7 @@ pub fn funcCall(
     return std.fmt.allocPrint(alloc, "{s})", .{tmp}) catch unreachable;
 }
 
+/// llvmType returns the name of the appropriate type in the LLVM IR.
 pub fn llvmType(t: types.Type) []const u8 {
     return switch (t) {
         types.TypeTag.simple => |st| switch (st) {
@@ -360,6 +387,7 @@ pub fn llvmType(t: types.Type) []const u8 {
     };
 }
 
+/// llvmAssignOp returns the name of the appropriate assignment operation in the LLVM IR.
 pub fn llvmAssignOp(t: types.Type, op: tokens.TokenType) []const u8 {
     switch (op) {
         tt.LSH_ASSIGN => return "shl",
@@ -391,6 +419,7 @@ pub fn llvmAssignOp(t: types.Type, op: tokens.TokenType) []const u8 {
     };
 }
 
+/// llvmFloatOpreturns the name of the appropriate floating-point operation in the LLVM IR.
 pub fn llvmFloatOp(op: tokens.TokenType) []const u8 {
     return switch (op) {
         tt.EQL => "oeq",
@@ -409,6 +438,7 @@ pub fn llvmFloatOp(op: tokens.TokenType) []const u8 {
     };
 }
 
+/// llvmFloatOpreturns the name of the appropriate integer operation in the LLVM IR.
 pub fn llvmIntOp(op: tokens.TokenType) []const u8 {
     return switch (op) {
         tt.EQL => "eq",
@@ -432,6 +462,7 @@ pub fn llvmIntOp(op: tokens.TokenType) []const u8 {
     };
 }
 
+/// evalConstant evaluates the provided constants depending on the operation.
 pub fn evalConstant(
     op: tokens.TokenType,
     lhs: []const u8,
@@ -502,25 +533,26 @@ pub fn evalConstant(
 
 test "signature" {
     {
-        var args = std.ArrayList(symbols.Symbol).init(std.testing.allocator);
-        defer args.deinit();
-
         var name = try std.fmt.allocPrint(std.testing.allocator, "@main", .{});
         defer std.testing.allocator.free(name);
 
         var retT = types.SimpleType.create(std.testing.allocator, types.SimpleType.I32);
-        defer retT.destroy(std.testing.allocator);
+        var func = types.Func.init(std.testing.allocator, retT);
+        func.args = std.ArrayList(symbols.Symbol).init(std.testing.allocator);
 
-        var sig = signature(std.testing.allocator, name, args, retT.*);
-        defer std.testing.allocator.free(sig);
+        defer func.destroy(std.testing.allocator);
 
-        try std.testing.expectEqualStrings("define i32 @main()", sig);
+        var c = CodeGen.init(std.testing.allocator);
+        defer c.deinit();
+        c.newSegment();
+
+        c.emitSignature(func, name);
+
+        try std.testing.expectEqualStrings("define i32 @main()", c.segments.items[0]);
     }
 
     {
         var args = std.ArrayList(symbols.Symbol).init(std.testing.allocator);
-        defer args.deinit();
-
         args.append(symbols.Symbol{
             .name = "arg1",
             .llvmName = std.fmt.allocPrint(std.testing.allocator, "%arg1.1", .{}) catch unreachable,
@@ -533,18 +565,21 @@ test "signature" {
             .t = types.SimpleType.create(std.testing.allocator, types.SimpleType.BOOL),
             .defined = true,
         }) catch unreachable;
-        defer for (args.items) |arg|
-            arg.destroy(std.testing.allocator);
 
         var name = try std.fmt.allocPrint(std.testing.allocator, "@func123", .{});
         defer std.testing.allocator.free(name);
 
         var retT = types.SimpleType.create(std.testing.allocator, types.SimpleType.I32);
-        defer retT.destroy(std.testing.allocator);
+        var func = types.Func.init(std.testing.allocator, retT);
+        func.args = args;
+        defer func.destroy(std.testing.allocator);
 
-        var sig = signature(std.testing.allocator, name, args, retT.*);
-        defer std.testing.allocator.free(sig);
+        var c = CodeGen.init(std.testing.allocator);
+        defer c.deinit();
+        c.newSegment();
 
-        try std.testing.expectEqualStrings("define i32 @func123(i32 %arg1.1, i1 %arg2.2)", sig);
+        c.emitSignature(func, name);
+
+        try std.testing.expectEqualStrings("define i32 @func123(i32 %arg1.1, i1 %arg2.2)", c.segments.items[0]);
     }
 }

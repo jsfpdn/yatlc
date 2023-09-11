@@ -5,6 +5,7 @@ const token = @import("token.zig");
 pub const Token = token.Token;
 pub const TokenType = token.TokenType;
 
+/// Scanner performs the lexical analysis of yatl code.
 pub const Scanner = struct {
     contents: []const u8, // Source code
 
