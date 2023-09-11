@@ -1664,7 +1664,7 @@ pub const Parser = struct {
                         }
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
                     } else {
                         for (toEnd.items) |te| self.alloc.free(te);
                         toEnd.resize(0) catch unreachable;
@@ -1783,7 +1783,7 @@ pub const Parser = struct {
                         }
 
                         self.alloc.free(lastValue);
-                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{exp.rValue.?}) catch unreachable;
+                        lastValue = std.fmt.allocPrint(self.alloc, "{s}", .{nExp.rValue.?}) catch unreachable;
                     } else {
                         for (toEnd.items) |te| self.alloc.free(te);
                         toEnd.resize(0) catch unreachable;
