@@ -963,7 +963,7 @@ pub const Parser = struct {
         } else {
             // Hack: if body does not generate any rvalue, make empty string
             // to not break anything.
-            exp.rValue = self.createString("", .{});
+            exp.rValue = self.createString("null", .{});
         }
         return exp;
     }
@@ -1117,16 +1117,16 @@ pub const Parser = struct {
             exp.lValue = llvmName;
             exp.rValue = self.c.genLLVMNameEmpty();
 
-            self.c.emit(
-                self.createString("{s} = load {s}, ptr {s}", .{
-                    exp.rValue.?,
-                    codegen.llvmType(exp.t.?.*),
-                    llvmName,
-                }),
-                self.c.lastBlockIndex(),
-            );
-
             if (!identType.?.isUnit()) {
+                self.c.emit(
+                    self.createString("{s} = load {s}, ptr {s}", .{
+                        exp.rValue.?,
+                        codegen.llvmType(exp.t.?.*),
+                        llvmName,
+                    }),
+                    self.c.lastBlockIndex(),
+                );
+
                 self.c.emitInit(
                     std.fmt.allocPrint(self.alloc, "{s} = alloca {s}", .{
                         llvmName,
@@ -1235,8 +1235,7 @@ pub const Parser = struct {
             },
             // Assignments:tt.LAND_ASSIGN and tt.LOR_ASSIGN are special due to the fact that they are lazily evaluated.
             tt.LAND_ASSIGN, tt.LOR_ASSIGN => {
-                // TODO: Create a single function for emitting all the necessary IR (including type conversions) for the lazy operations.
-                self.consume(tt.LAND_ASSIGN) catch unreachable;
+                self.consume(assignTok.tokenType) catch unreachable;
                 if (!exp.lt.?.isBool()) {
                     self.report(
                         tok,
@@ -1246,6 +1245,28 @@ pub const Parser = struct {
                     );
                     return SyntaxError.TypeError;
                 }
+
+                var inserted = self.c.genLLVMNameEmpty();
+                var following = self.c.genLLVMNameEmpty();
+
+                defer {
+                    self.alloc.free(inserted);
+                    self.alloc.free(following);
+                }
+
+                var previousBlock = self.alloc.dupe(u8, self.c.currentBlock) catch unreachable;
+                defer self.alloc.free(previousBlock);
+
+                self.c.emit(
+                    self.createString("br i1 {s}, label {s}, label {s}", .{
+                        exp.rValue.?,
+                        if (assignTok.tokenType == tt.LAND_ASSIGN) inserted else following,
+                        if (assignTok.tokenType == tt.LAND_ASSIGN) following else inserted,
+                    }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.c.emitBlock(inserted);
 
                 var rhsExp = try self.parseSubExpression();
                 defer rhsExp.destroy(self.alloc);
@@ -1260,8 +1281,36 @@ pub const Parser = struct {
                     return SyntaxError.TypeError;
                 }
 
+                self.c.emit(
+                    self.createString("store i1 {s}, ptr {s}", .{ rhsExp.rValue.?, exp.lValue.? }),
+                    self.c.lastBlockIndex(),
+                );
+
+                self.c.emit(self.createString("br label {s}", .{following}), self.c.lastBlockIndex());
+
+                var jumpFromInserted = self.alloc.dupe(u8, self.c.currentBlock) catch unreachable;
+                defer self.alloc.free(jumpFromInserted);
+
+                self.c.emitBlock(following);
+
+                var result = self.c.genLLVMNameEmpty();
+                defer self.alloc.free(result);
+
+                self.c.emit(
+                    self.createString("{s} = phi i1 [ 0, {s} ], [ {s}, {s} ]", .{
+                        result,
+                        previousBlock,
+                        rhsExp.rValue.?,
+                        jumpFromInserted,
+                    }),
+                    self.c.lastBlockIndex(),
+                );
+
                 exp.destroyRValue(self.alloc);
-                exp.rValue = self.alloc.dupe(u8, rhsExp.rValue.?) catch unreachable;
+                exp.rValue = self.alloc.dupe(u8, result) catch unreachable;
+
+                exp.t.?.destroy(self.alloc);
+                exp.t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL);
 
                 exp.hasLValue = true;
                 exp.semiMustFollow = true;
@@ -1352,7 +1401,7 @@ pub const Parser = struct {
                 );
                 defer self.alloc.free(elseRes);
 
-                var lValue = self.createString("", .{});
+                var lValue = self.createString("null", .{});
                 defer self.alloc.free(lValue);
 
                 if (thenExp.hasLValue and elseExp.hasLValue and thenExp.lt.?.equals(elseExp.lt.?.*)) {
@@ -1400,7 +1449,7 @@ pub const Parser = struct {
                     condExp.rValue = result;
                 } else {
                     condExp.destroyRValue(self.alloc);
-                    condExp.rValue = self.createString("", .{});
+                    condExp.rValue = self.createString("null", .{});
                 }
 
                 condExp.t.?.destroy(self.alloc);
@@ -1497,7 +1546,7 @@ pub const Parser = struct {
                 );
                 defer self.alloc.free(elseConv);
 
-                var lValue = self.createString("", .{});
+                var lValue = self.createString("null", .{});
                 defer self.alloc.free(lValue);
 
                 if (thenExp.hasLValue and elseExp.hasLValue and thenExp.lt.?.equals(elseExp.lt.?.*)) {
@@ -1843,7 +1892,9 @@ pub const Parser = struct {
                         return SyntaxError.TypeError;
                     }
 
+                    if (intermediateResult) |ir| self.alloc.free(ir);
                     intermediateResult = self.c.genLLVMNameEmpty();
+
                     self.c.emit(
                         std.fmt.allocPrint(self.alloc, "{s} = {s} i1 {s}, {s}", .{
                             intermediateResult.?,
@@ -1861,6 +1912,7 @@ pub const Parser = struct {
                     exp.destroy(self.alloc);
                     return Expression{
                         .t = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
+                        .lt = types.SimpleType.create(self.alloc, types.SimpleType.BOOL),
                         .rValue = std.fmt.allocPrint(self.alloc, "{s}", .{lastValue}) catch unreachable,
                         .hasLValue = false,
                         .semiMustFollow = true,
@@ -2229,6 +2281,8 @@ pub const Parser = struct {
 
                 if (exp.t.?.isConstant()) {
                     exp.t.?.constant.value = ~exp.t.?.constant.value;
+                    exp.destroyRValue(self.alloc);
+                    exp.rValue = self.createString("{d}", .{exp.t.?.constant.value});
                 } else {
                     var result = self.c.genLLVMNameEmpty();
                     self.c.emit(
@@ -2414,7 +2468,6 @@ pub const Parser = struct {
                     exp.t.?.destroy(self.alloc);
                     exp.t = t;
 
-                    // TODO: Is exp.rValue set correctly?
                     exp.destroyRValue(self.alloc);
                     exp.rValue = self.alloc.dupe(u8, exp.lValue.?) catch unreachable;
 
@@ -2668,6 +2721,7 @@ pub const Parser = struct {
                         return Expression{
                             .t = s.t.clone(self.alloc),
                             .lt = s.t.clone(self.alloc),
+                            .rValue = self.createString("null", .{}),
                             .hasLValue = true,
                             .semiMustFollow = true,
                             .endsWithReturn = false,
@@ -2726,7 +2780,7 @@ pub const Parser = struct {
                 return Expression{
                     .t = types.Type.createPointer(self.alloc),
                     .lt = types.Type.createPointer(self.alloc),
-                    .rValue = self.createString("", .{}),
+                    .rValue = self.createString("null", .{}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -2782,14 +2836,14 @@ pub const Parser = struct {
             },
             tt.C_CHAR => {
                 const char = self.consumeGet(tt.C_CHAR) catch unreachable;
-                if (char.symbol[0] < 0 or char.symbol[0] > 255) {
+                if (char.symbol[1] < 0 or char.symbol[1] > 255) {
                     self.report(char, reporter.Level.ERROR, "'{s}' is not ASCII-encoded", .{char.symbol}, true, true);
                     return SyntaxError.TypeError;
                 }
 
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.U8),
-                    .rValue = self.alloc.dupe(u8, char.symbol) catch unreachable,
+                    .rValue = self.createString("{d}", .{char.symbol[1]}),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -3320,6 +3374,7 @@ pub const Parser = struct {
 
         if (funcSymbol.t.func.retT.isUnit()) {
             self.c.emit(funcCall, self.c.lastBlockIndex());
+            exp.rValue = self.createString("null", .{});
         } else {
             defer self.alloc.free(funcCall);
 
