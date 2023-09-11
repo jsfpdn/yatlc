@@ -41,9 +41,9 @@ pub const Scanner = struct {
     /// If tokenWriter was supplied during the initialization, the analyzed token
     /// is formatted and written to it.
     pub fn next(self: *Scanner) token.Token {
-        var tok: Token = self._next(true);
+        var tok: Token = self._next(false);
         while (tok.tokenType == TokenType.COMMENT) {
-            tok = self._next(true);
+            tok = self._next(false);
         }
         return tok;
     }
@@ -82,9 +82,7 @@ pub const Scanner = struct {
             .symbol = "",
         };
 
-        if (!peekSymbol) {
-            defer self.emitToken(tok);
-        }
+        defer if (!peekSymbol) self.emitToken(tok);
 
         if (self.eof()) {
             tok.tokenType = TokenType.EOF;
@@ -362,7 +360,6 @@ pub const Scanner = struct {
     fn parseMultilineComment(self: *Scanner, tok: *Token) void {
         var toBeClosed: u32 = 1;
         while (true) {
-            self.advance();
             if (toBeClosed == 0) {
                 tok.tokenType = TokenType.COMMENT;
                 if (self.eof()) {
@@ -384,6 +381,8 @@ pub const Scanner = struct {
                 toBeClosed += 1;
             } else if (self.followsCommentClosing()) {
                 toBeClosed -= 1;
+            } else {
+                self.advance();
             }
         }
     }
@@ -392,7 +391,7 @@ pub const Scanner = struct {
         const p = self.peekChar() catch return false;
         const pn = self.peekNextChar() catch return false;
 
-        if ((p == '/') and (pn == '*')) {
+        if (p == '/' and pn == '*') {
             self.advance();
             self.advance();
             return true;

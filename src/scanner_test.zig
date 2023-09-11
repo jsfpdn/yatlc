@@ -200,11 +200,13 @@ test "scan comments" {
         \\ /* multiline comment!
         \\      /* nested multiline comment! */
         \\  this is also a comment */
+        \\ /*
+        \\ /* comment */*/
     ;
     var s = Scanner.init(contents, null);
 
     // Comments are skipped.
-    try std.testing.expectEqual(s.next().tokenType, TokenType.EOF);
+    try std.testing.expectEqual(TokenType.EOF, s.next().tokenType);
 }
 
 test "scan malformed multiline comments" {
