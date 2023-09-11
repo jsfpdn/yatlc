@@ -6,6 +6,7 @@ const scanner = @import("scanner.zig");
 const symbols = @import("symbols.zig");
 const token = @import("token.zig");
 const types = @import("types.zig");
+const utils = @import("utils.zig");
 
 const tt = token.TokenType;
 
@@ -85,9 +86,6 @@ pub const Parser = struct {
     //   simplify asserts to just a single line `try assertType(exp.t.?, BOOL, UNIT)`.
     //   Figure out how to represent the types neatly.
     //   https://stackoverflow.com/questions/72122366/how-to-initialize-variadic-function-arguments-in-zig
-    // * Implement conversion of floats to hexadecimal.
-    // * IR emitter
-    //      * '\n' ~> '\0A' in strings when printing
 
     pub fn init(
         alloc: std.mem.Allocator,
@@ -2764,11 +2762,12 @@ pub const Parser = struct {
             },
             tt.C_FLOAT => {
                 const int = self.consumeGet(tt.C_FLOAT) catch unreachable;
+                const float = std.fmt.parseFloat(f64, int.symbol) catch unreachable;
 
                 return Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
                     .lt = types.SimpleType.create(self.alloc, types.SimpleType.DOUBLE),
-                    .rValue = self.alloc.dupe(u8, int.symbol) catch unreachable,
+                    .rValue = utils.doubleToHexadecimal(self.alloc, float),
                     .hasLValue = false,
                     .semiMustFollow = true,
                     .endsWithReturn = false,
@@ -3844,13 +3843,12 @@ pub const Parser = struct {
             }
 
             if (to.isFloat()) {
-                // TODO: To hexadecimal?
                 if (conv != ConvMode.BITCAST) {
                     self.alloc.free(result);
-                    return self.createString("{d}", .{from.constant.value});
+                    var f: f64 = @floatFromInt(from.constant.value);
+                    return utils.doubleToHexadecimal(self.alloc, f);
                 }
 
-                // TODO: Truncate and cast properly.
                 var tmp: i32 = @truncate(from.constant.value);
                 self.c.emit(
                     self.createString("{s} = bitcast i32 {d} to float", .{ result, tmp }),
@@ -3861,13 +3859,12 @@ pub const Parser = struct {
             }
 
             if (to.isDouble()) {
-                // TODO: To hexadecimal?
                 if (conv != ConvMode.BITCAST) {
                     self.alloc.free(result);
-                    return self.createString("{d}", .{from.constant.value});
+                    var f: f64 = @floatFromInt(from.constant.value);
+                    return utils.doubleToHexadecimal(self.alloc, f);
                 }
 
-                // TODO: Truncate and cast properly.
                 var tmp: i64 = @truncate(from.constant.value);
                 self.c.emit(
                     self.createString("{s} = bitcast i32 {d} to float", .{ result, tmp }),
@@ -4399,7 +4396,6 @@ pub const Parser = struct {
     }
 
     fn createString(self: *Parser, comptime fmt: []const u8, args: anytype) []const u8 {
-        // TODO: Use this function during emitting to simplify the code.
         return std.fmt.allocPrint(self.alloc, fmt, args) catch unreachable;
     }
 };

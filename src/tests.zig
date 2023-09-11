@@ -4,6 +4,7 @@ const codegen_test = @import("codegen.zig");
 const parser_test = @import("parser_test.zig");
 const scanner_test = @import("scanner_test.zig");
 const symbols_test = @import("symbols_test.zig");
+const utils_test = @import("utils.zig");
 
 test {
     // Driver code to run all tests in descendant sub-packages.
@@ -11,5 +12,6 @@ test {
     std.testing.refAllDeclsRecursive(parser_test);
     std.testing.refAllDeclsRecursive(scanner_test);
     std.testing.refAllDeclsRecursive(symbols_test);
+    std.testing.refAllDeclsRecursive(utils_test);
     std.testing.refAllDeclsRecursive(@This());
 }
