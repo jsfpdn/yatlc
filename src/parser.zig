@@ -1347,7 +1347,7 @@ pub const Parser = struct {
                     elseExp.t.?,
                     t,
                     ConvMode.IMPLICIT,
-                    thenExp.rValue.?,
+                    elseExp.rValue.?,
                     self.c.lastBlockIndex(),
                 );
                 defer self.alloc.free(elseRes);
@@ -3753,7 +3753,7 @@ pub const Parser = struct {
                 );
             } else if (to.isBool() or to.isNumeric()) {
                 self.c.emit(
-                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint {s} to {s}", .{ result, what, codegen.llvmType(to.*) }) catch unreachable,
+                    std.fmt.allocPrint(self.alloc, "{s} = ptrtoint ptr {s} to {s}", .{ result, what, codegen.llvmType(to.*) }) catch unreachable,
                     blockIndex,
                 );
             } else if (to.isFloat()) {
