@@ -21,7 +21,7 @@ pub const Symbol = struct {
     pub fn clone(self: Symbol, alloc: std.mem.Allocator) Symbol {
         return Symbol{
             .name = self.name,
-            .llvmName = std.fmt.allocPrint(alloc, "{s}", .{self.llvmName}) catch unreachable,
+            .llvmName = alloc.dupe(u8, self.llvmName) catch unreachable,
             .location = self.location,
             .t = self.t.clone(alloc),
             .defined = self.defined,

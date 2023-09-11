@@ -145,6 +145,8 @@ pub const Parser = struct {
                             "function '{s}' is declared but not defined",
                             .{s.name},
                         );
+
+                        return SyntaxError.TypeError;
                     }
                 },
                 else => {},
@@ -248,19 +250,90 @@ pub const Parser = struct {
 
                 var ft = self.alloc.create(types.Type) catch unreachable;
                 ft.* = types.Type{ .func = types.Func.init(self.alloc, t) };
-                errdefer ft.destroy(self.alloc);
-                ft.func.args = try self.parseArgList();
+                defer ft.destroy(self.alloc);
 
-                var llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
-                errdefer self.alloc.free(llvmFuncName);
+                ft.func.args = try self.parseArgList();
+                var llvmFuncName: []const u8 = "";
+                defer self.alloc.free(llvmFuncName);
+
+                if (self.st.get(ident.symbol)) |func| {
+                    llvmFuncName = self.alloc.dupe(u8, func.llvmName) catch unreachable;
+                } else {
+                    llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
+                }
 
                 var fs = symbols.Symbol{
                     .name = ident.symbol,
-                    .llvmName = llvmFuncName,
+                    .llvmName = self.alloc.dupe(u8, llvmFuncName) catch unreachable,
                     .location = ident,
-                    .t = ft,
+                    .t = ft.clone(self.alloc),
                     .defined = false,
                 };
+                defer fs.destroy(self.alloc);
+
+                // Check that if there's a symbol with the same name, it must be a function with identical
+                // argument types that has been declared but not defined yet.
+                if (self.st.get(ident.symbol)) |s| {
+                    if (s.defined) {
+                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
+                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
+                        return SyntaxError.TypeError;
+                    }
+
+                    switch (s.t.*) {
+                        types.TypeTag.func => |otherFunc| {
+                            ft.func.defines(otherFunc) catch |err| {
+                                switch (err) {
+                                    types.Func.DefinitionErrors.ArgTypeMismatch => {
+                                        if (fs.defined) {
+                                            self.report(
+                                                fs.location,
+                                                reporter.Level.ERROR,
+                                                "definition of '{s}' does not match its declaration",
+                                                .{fs.name},
+                                            );
+                                        } else {
+                                            self.report(
+                                                fs.location,
+                                                reporter.Level.ERROR,
+                                                "redaclaration of '{s}' does not match the former declaration",
+                                                .{fs.name},
+                                            );
+                                        }
+                                        self.report(
+                                            s.location,
+                                            reporter.Level.NOTE,
+                                            "'{s}' first declared here",
+                                            .{fs.name},
+                                        );
+                                        // TODO: Make error reporting better - show where the mismatch is.
+                                    },
+                                }
+
+                                // TODO: Return better error? We need to return with error
+                                // in order to destroy all the data structures.
+                                return SyntaxError.TypeError;
+                            };
+
+                            // Upsert the declared function with it's definition in the symbol table.
+                            self.st.upsert(fs.clone(self.alloc));
+                        },
+                        else => {
+                            self.report(
+                                fs.location,
+                                reporter.Level.ERROR,
+                                "function '{s}' shadows global variable",
+                                .{fs.name},
+                            );
+                            // TODO: Return better error? We need to return with error
+                            // in order to destroy all the data structures.
+                            return SyntaxError.TypeError;
+                        },
+                    }
+                } else {
+                    // SymbolAlreadyExists cannot occur since we check it above^.
+                    self.st.insert(fs.clone(self.alloc)) catch unreachable;
+                }
 
                 // Try to parse the function body if it is a function definition.
                 next = self.s.peek();
@@ -365,75 +438,12 @@ pub const Parser = struct {
                     self.c.waits = false;
 
                     fs.defined = true;
+                    self.st.upsert(fs.clone(self.alloc));
 
                     self.c.concatActiveSegments();
                 } else {
                     try self.consume(tt.SEMICOLON);
                     self.c.concatActiveSegments();
-                }
-
-                // Check that if there's a symbol with the same name, it must be a function with identical
-                // argument types that has been declared but not defined yet.
-                if (self.st.get(ident.symbol)) |s| {
-                    if (s.defined) {
-                        self.report(fs.location, reporter.Level.ERROR, "function '{s}' is already defined", .{fs.name});
-                        self.report(s.location, reporter.Level.NOTE, "'{s}' first defined here", .{fs.name});
-                        return SyntaxError.TypeError;
-                    }
-
-                    switch (s.t.*) {
-                        types.TypeTag.func => |otherFunc| {
-                            ft.func.defines(otherFunc) catch |err| {
-                                switch (err) {
-                                    types.Func.DefinitionErrors.ArgTypeMismatch => {
-                                        if (fs.defined) {
-                                            self.report(
-                                                fs.location,
-                                                reporter.Level.ERROR,
-                                                "definition of '{s}' does not match its declaration",
-                                                .{fs.name},
-                                            );
-                                        } else {
-                                            self.report(
-                                                fs.location,
-                                                reporter.Level.ERROR,
-                                                "redaclaration of '{s}' does not match the former declaration",
-                                                .{fs.name},
-                                            );
-                                        }
-                                        self.report(
-                                            s.location,
-                                            reporter.Level.NOTE,
-                                            "'{s}' first declared here",
-                                            .{fs.name},
-                                        );
-                                        // TODO: Make error reporting better - show where the mismatch is.
-                                    },
-                                }
-
-                                // TODO: Return better error? We need to return with error
-                                // in order to destroy all the data structures.
-                                return SyntaxError.TypeError;
-                            };
-
-                            // Upsert the declared function with it's definition in the symbol table.
-                            self.st.upsert(fs);
-                        },
-                        else => {
-                            self.report(
-                                fs.location,
-                                reporter.Level.ERROR,
-                                "function '{s}' shadows global variable",
-                                .{fs.name},
-                            );
-                            // TODO: Return better error? We need to return with error
-                            // in order to destroy all the data structures.
-                            return SyntaxError.TypeError;
-                        },
-                    }
-                } else {
-                    // SymbolAlreadyExists cannot occur since we check it above^.
-                    self.st.insert(fs) catch unreachable;
                 }
             },
             else => {
@@ -2876,7 +2886,6 @@ pub const Parser = struct {
             tt.SIZEOF => self.parseBuiltinSizeof(),
             tt.LEN => self.parseBuiltinLen(),
             tt.PRINT => self.parseBuiltinPrint(),
-            tt.PRINTLN => @panic("TODO: Implement me!"),
             tt.READLN => self.parseBuiltinReadln(),
             tt.BITCAST => self.parseBuiltinBitcast(),
             tt.EXIT => self.parseBuiltinExit(),

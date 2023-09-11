@@ -134,7 +134,6 @@ pub const TokenType = enum(u8) {
     SIZEOF, // sizeof
     LEN, // len
     PRINT, // print
-    PRINTLN, // println
     READLN, // readln
     BITCAST, // bitcast
     EXIT, // exit
@@ -158,7 +157,6 @@ pub const TokenType = enum(u8) {
         .{ "sizeof", .SIZEOF },
         .{ "len", .LEN },
         .{ "print", .PRINT },
-        .{ "println", .PRINTLN },
         .{ "readln", .READLN },
         .{ "exit", .EXIT },
     });
@@ -292,7 +290,6 @@ pub const TokenType = enum(u8) {
         "sizeof",
         "len",
         "print",
-        "println",
         "readln",
         "bitcast",
         "exit",
