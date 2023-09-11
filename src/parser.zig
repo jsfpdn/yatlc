@@ -243,12 +243,14 @@ pub const Parser = struct {
     /// declarations and function definitions.
     fn parseTopLevelStatement(self: *Parser) SyntaxError!void {
         const t = try self.parseType();
+        defer t.destroy(self.alloc);
+
         const ident = try self.consumeGet(tt.IDENT);
 
         var next = self.s.next();
         switch (next.tokenType) {
-            tt.ASSIGN => try self.parseGlobalVariable(ident, t),
-            tt.LPAREN => try self.parseFunction(ident, t),
+            tt.SEMICOLON => try self.globalVariable(ident, t.clone(self.alloc)),
+            tt.LPAREN => try self.parseFunction(ident, t.clone(self.alloc)),
             else => {
                 self.report(
                     next,
@@ -261,21 +263,32 @@ pub const Parser = struct {
         }
     }
 
-    /// Parses a global variable.
-    fn parseGlobalVariable(self: *Parser, ident: token.Token, t: *types.Type) SyntaxError!void {
-        // TODO: Emit code for global variable declaration.
-        errdefer t.destroy(self.alloc);
+    /// Declars global variable and emits LLVM IR.
+    fn globalVariable(self: *Parser, ident: token.Token, t: *types.Type) SyntaxError!void {
+        defer t.destroy(self.alloc);
 
-        var next = self.s.peek();
-        var exp = try self.parseSubExpression();
-        defer exp.destroy(self.alloc);
+        var llvmName = try self.declare(ident.symbol, t, ident, true, true);
+        defer self.alloc.free(llvmName);
 
-        const value = try self.convertRep(next, exp.t.?, t, ConvMode.IMPLICIT, "TODO", self.c.lastBlockIndex());
-        _ = value;
+        // We do not emit anything for values of type unit.
+        if (t.isUnit()) return;
 
-        _ = try self.declare(ident.symbol, t, ident, true);
+        // Prepare the initial value depending on the type.
+        var initValue = switch (t.*) {
+            types.TypeTag.simple => |simple| switch (simple) {
+                types.SimpleType.FLOAT, types.SimpleType.DOUBLE => "0.0",
+                else => "0",
+            },
+            types.TypeTag.array => "null",
+            else => unreachable,
+        };
 
-        try self.consume(tt.SEMICOLON);
+        self.c.newSegment();
+        self.c.emit(
+            self.createString("{s} = global {s} {s}", .{ llvmName, codegen.llvmType(t.*), initValue }),
+            self.c.lastBlockIndex(),
+        );
+        self.c.concatActiveSegments();
     }
 
     /// Parses a function - either a function declaration or a function definition with a body.
@@ -293,7 +306,7 @@ pub const Parser = struct {
         if (self.st.get(ident.symbol)) |func| {
             llvmFuncName = self.alloc.dupe(u8, func.llvmName) catch unreachable;
         } else {
-            llvmFuncName = self.c.genLLVMFuncName(ident.symbol);
+            llvmFuncName = self.c.genLLVMGlobalName(ident.symbol);
         }
 
         var fs = symbols.Symbol{
@@ -1151,7 +1164,7 @@ pub const Parser = struct {
                 return SyntaxError.TypeError;
             }
 
-            var llvmName = try self.declare(identTok.?.symbol, identType.?, identTok.?, false);
+            var llvmName = try self.declare(identTok.?.symbol, identType.?, identTok.?, false, false);
             errdefer self.alloc.free(llvmName);
 
             exp.t = identType.?.clone(self.alloc);
@@ -1369,7 +1382,14 @@ pub const Parser = struct {
     /// Defines an identifier in te currently open scope. If a symbol with the same identifier
     /// is already defined in the current scope, error is logged instead. Returns the name of the identifier
     /// in the LLVM IR.
-    fn declare(self: *Parser, ident: []const u8, t: *types.Type, at: token.Token, defined: bool) SyntaxError![]const u8 {
+    fn declare(
+        self: *Parser,
+        ident: []const u8,
+        t: *types.Type,
+        at: token.Token,
+        defined: bool,
+        global: bool,
+    ) SyntaxError![]const u8 {
         if (self.st.declared(ident)) {
             var prevDef = self.st.get(ident).?;
             self.report(at, reporter.Level.ERROR, "'{s}' already declared at {d}:{d}", .{ ident, prevDef.location.sourceLoc.line, prevDef.location.sourceLoc.column });
@@ -1377,7 +1397,7 @@ pub const Parser = struct {
         }
         var s = symbols.Symbol{
             .name = ident,
-            .llvmName = self.c.genLLVMName(ident),
+            .llvmName = if (global) self.c.genLLVMGlobalName(ident) else self.c.genLLVMName(ident),
             .location = at,
             .t = t.clone(self.alloc),
             .defined = defined,

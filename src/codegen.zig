@@ -152,13 +152,13 @@ pub const CodeGen = struct {
         return llvmName;
     }
 
-    /// genLLVMFuncName generates a unique LLVM name for a function based on `funcName`.
-    pub fn genLLVMFuncName(self: *CodeGen, funcName: []const u8) []const u8 {
-        if (std.mem.eql(u8, funcName, "main")) return std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable;
+    /// genLLVMGlobalName generates a unique LLVM name for a global variable or function based on `name`.
+    pub fn genLLVMGlobalName(self: *CodeGen, name: []const u8) []const u8 {
+        if (std.mem.eql(u8, name, "main")) return std.fmt.allocPrint(self.alloc, "@main", .{}) catch unreachable;
 
-        var llvmFuncName = std.fmt.allocPrint(self.alloc, "@{s}.{d}", .{ funcName, self.commandNum }) catch unreachable;
+        var llvmGlobalName = std.fmt.allocPrint(self.alloc, "@{s}.{d}", .{ name, self.commandNum }) catch unreachable;
         self.commandNum += 1;
-        return llvmFuncName;
+        return llvmGlobalName;
     }
 
     pub fn emitAllocPtr(self: *CodeGen, toType: types.Type) []const u8 {
