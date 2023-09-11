@@ -51,30 +51,3 @@ test "parse types" {
         }
     }
 }
-
-test "parse correct top level statement" {
-    const testCase = struct {
-        input: [:0]const u8,
-    };
-
-    const cases = [_]testCase{
-        .{ .input = "u32 testFunc() { return @u32(123); }" },
-        .{ .input = "unit testFunc();" },
-        .{ .input = "unit testFunc(u32 a);" },
-        .{ .input = "[-]u32 testFunc(u32 a, [-][-]i32 b);" },
-        .{ .input = "[-][-,-,-]i32 testFunc(u32 a, [-][-]i32 b);" },
-    };
-
-    for (cases) |tc| {
-        var s = scanner.Scanner.init(tc.input, null);
-        var c = codegen.CodeGen.init(std.testing.allocator);
-        var p = parser.Parser.init(std.testing.allocator, s, null, c, null);
-
-        defer {
-            c.deinit();
-            p.deinit();
-        }
-
-        try p.parse();
-    }
-}

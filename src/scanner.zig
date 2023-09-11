@@ -111,13 +111,12 @@ pub const Scanner = struct {
             '%' => self.switch2(&tok, '=', TokenType.REM_ASSIGN, TokenType.REM),
             '=' => self.switch2(&tok, '=', TokenType.EQL, TokenType.ASSIGN),
             '!' => self.switch2(&tok, '=', TokenType.NEQ, TokenType.NEG),
-            // TODO: Implement <<=, >>=, &&=, ||=
-            '<' => self.switch3(&tok, '=', TokenType.LEQ, '<', TokenType.B_LSH, TokenType.LT),
-            '>' => self.switch3(&tok, '=', TokenType.GEQ, '>', TokenType.B_RSH, TokenType.GT),
             '+' => self.switch3(&tok, '=', TokenType.ADD_ASSIGN, '+', TokenType.INC, TokenType.ADD),
             '-' => self.switch3(&tok, '=', TokenType.SUB_ASSIGN, '-', TokenType.DEC, TokenType.SUB),
-            '&' => self.switch3(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, TokenType.B_AND),
-            '|' => self.switch3(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, TokenType.B_OR),
+            '<' => self.switch4(&tok, '=', TokenType.LEQ, '<', TokenType.B_LSH, '=', TokenType.LSH_ASSIGN, TokenType.LT),
+            '>' => self.switch4(&tok, '=', TokenType.GEQ, '>', TokenType.B_RSH, '=', TokenType.RSH_ASSIGN, TokenType.GT),
+            '&' => self.switch4(&tok, '=', TokenType.AND_ASSIGN, '&', TokenType.LAND, '=', TokenType.LAND_ASSIGN, TokenType.B_AND),
+            '|' => self.switch4(&tok, '=', TokenType.OR_ASSIGN, '|', TokenType.LOR, '=', TokenType.LOR_ASSIGN, TokenType.B_OR),
             '"' => self.parseStringLiteral(&tok),
             '\'' => self.parseCharLiteral(&tok),
             'a'...'z', 'A'...'Z', '_' => self.parseIdentOrKeyword(&tok),
@@ -461,7 +460,17 @@ pub const Scanner = struct {
         }
     }
 
-    fn switch4(self: *Scanner, tok: *Token, ifA: u8, thenA: TokenType, elifB: u8, thenB: TokenType, elifC: u8, thenC: TokenType, elseFollows: TokenType) void {
+    fn switch4(
+        self: *Scanner,
+        tok: *Token,
+        ifA: u8,
+        thenA: TokenType,
+        elifB: u8,
+        thenB: TokenType,
+        elifBAndC: u8,
+        thenC: TokenType,
+        elseFollows: TokenType,
+    ) void {
         tok.tokenType = elseFollows;
 
         if (self.peekChar()) |follows| {
@@ -469,8 +478,15 @@ pub const Scanner = struct {
                 tok.tokenType = thenA;
             } else if (follows == elifB) {
                 tok.tokenType = thenB;
-            } else if (follows == elifC) {
-                tok.tokenType = thenC;
+
+                if (self.peekNextChar()) |followsNext| {
+                    if (followsNext == elifBAndC) {
+                        self.advance();
+                        tok.tokenType = thenC;
+                    }
+                } else |err| switch (err) {
+                    error.EOF => return,
+                }
             } else {
                 return;
             }
