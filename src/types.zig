@@ -415,7 +415,7 @@ pub fn checkBounds(t: SimpleType, n: i128) bool {
     };
 }
 
-pub fn minimumSignedType(alloc: std.mem.Allocator, n: i128) *Type {
+pub fn minimumSignedType(alloc: std.mem.Allocator, n: i128) !*Type {
     if (-128 <= n and n <= 127)
         return SimpleType.create(alloc, SimpleType.I8);
 
@@ -428,5 +428,5 @@ pub fn minimumSignedType(alloc: std.mem.Allocator, n: i128) *Type {
     if (-9223372036854775808 <= n and n <= 9223372036854775807)
         return SimpleType.create(alloc, SimpleType.I64);
 
-    unreachable;
+    return error.Overflow;
 }

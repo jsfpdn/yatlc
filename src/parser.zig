@@ -620,6 +620,7 @@ pub const Parser = struct {
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
                 .lt = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+                .rValue = self.createString("EMPTY", .{}),
                 .endsWithReturn = false,
                 .semiMustFollow = false,
             };
@@ -726,6 +727,7 @@ pub const Parser = struct {
 
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+                .rValue = self.createString("EMPTY", .{}),
                 .endsWithReturn = false,
                 .semiMustFollow = false,
                 .hasLValue = false,
@@ -759,6 +761,7 @@ pub const Parser = struct {
         if (b and c) {
             return Expression{
                 .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+                .rValue = self.createString("EMPTY", .{}),
                 .endsWithReturn = true,
                 .semiMustFollow = false,
                 .hasLValue = false,
@@ -773,6 +776,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .endsWithReturn = false,
             .semiMustFollow = false,
             .hasLValue = false,
@@ -860,6 +864,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
@@ -924,6 +929,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
@@ -993,6 +999,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = false,
             .endsWithReturn = false,
             .hasLValue = false,
@@ -1045,6 +1052,7 @@ pub const Parser = struct {
                 );
                 break :blk Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+                    .rValue = self.createString("EMPTY", .{}),
                     .endsWithReturn = true,
                     .semiMustFollow = true,
                 };
@@ -1082,6 +1090,7 @@ pub const Parser = struct {
 
                 break :blk Expression{
                     .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+                    .rValue = self.createString("EMPTY", .{}),
                     .endsWithReturn = true,
                     .semiMustFollow = true,
                 };
@@ -1112,6 +1121,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = true,
         };
     }
@@ -1139,6 +1149,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = true,
         };
     }
@@ -1490,7 +1501,12 @@ pub const Parser = struct {
                 }
 
                 if (t.isConstant()) {
-                    var nt = types.minimumSignedType(self.alloc, t.constant.value);
+                    var nt = types.minimumSignedType(self.alloc, t.constant.value) catch |err| switch (err) {
+                        error.Overflow => {
+                            self.report(tok, reporter.Level.ERROR, "constant {d} does not fit", .{t.constant.value});
+                            return SyntaxError.TypeError;
+                        },
+                    };
                     t.destroy(self.alloc);
                     t = nt;
                 }
@@ -1636,7 +1652,13 @@ pub const Parser = struct {
                 }
 
                 if (t.isConstant()) {
-                    var newT = types.minimumSignedType(self.alloc, t.constant.value);
+                    var newT = types.minimumSignedType(self.alloc, t.constant.value) catch |err| switch (err) {
+                        error.Overflow => {
+                            self.report(tok, reporter.Level.ERROR, "constant {d} does not fit", .{t.constant.value});
+                            return SyntaxError.TypeError;
+                        },
+                    };
+
                     t.destroy(self.alloc);
                     t = newT;
                 }
@@ -2816,7 +2838,13 @@ pub const Parser = struct {
             },
             tt.C_INT => {
                 const int = self.consumeGet(tt.C_INT) catch unreachable;
-                const value = std.fmt.parseInt(i128, int.symbol, 0) catch unreachable;
+                const value = std.fmt.parseInt(i128, int.symbol, 0) catch |err| switch (err) {
+                    error.Overflow => {
+                        self.report(int, reporter.Level.ERROR, "integer constant {s} too large", .{int.symbol});
+                        return SyntaxError.TypeError;
+                    },
+                    else => unreachable,
+                };
 
                 return Expression{
                     .t = types.Constant.create(self.alloc, value),
@@ -3003,7 +3031,7 @@ pub const Parser = struct {
         return switch (builtinTok.tokenType) {
             tt.ALLOC => self.parseBuiltinAlloc(),
             tt.MALLOC => self.parseBuiltinMalloc(),
-            tt.REALLOC => return self.parseBuiltinRealloc(),
+            tt.REALLOC => self.parseBuiltinRealloc(),
             tt.FREE => self.parseBuiltinFree(),
             tt.SIZEOF => self.parseBuiltinSizeof(),
             tt.LEN => self.parseBuiltinLen(),
@@ -3238,6 +3266,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = true,
         };
     }
@@ -3320,6 +3349,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = true,
         };
     }
@@ -3379,6 +3409,7 @@ pub const Parser = struct {
 
         return Expression{
             .t = types.SimpleType.create(self.alloc, types.SimpleType.UNIT),
+            .rValue = self.createString("EMPTY", .{}),
             .semiMustFollow = true,
         };
     }
@@ -3913,9 +3944,15 @@ pub const Parser = struct {
 
             if (to.isFloat()) {
                 if (conv != ConvMode.BITCAST) {
-                    self.alloc.free(result);
                     var f: f64 = @floatFromInt(from.constant.value);
-                    return utils.doubleToHexadecimal(self.alloc, f);
+                    self.c.emit(
+                        self.createString("{s} = fptrunc double {s} to float", .{
+                            result,
+                            utils.doubleToHexadecimal(self.alloc, f),
+                        }),
+                        blockIndex,
+                    );
+                    return result;
                 }
 
                 var tmp: i32 = @truncate(from.constant.value);
@@ -3936,7 +3973,7 @@ pub const Parser = struct {
 
                 var tmp: i64 = @truncate(from.constant.value);
                 self.c.emit(
-                    self.createString("{s} = bitcast i32 {d} to float", .{ result, tmp }),
+                    self.createString("{s} = bitcast i64 {d} to double", .{ result, tmp }),
                     blockIndex,
                 );
 
@@ -3974,7 +4011,7 @@ pub const Parser = struct {
         }
 
         if (!from.isSigned() and from.isNumeric()) {
-            if (to.bitWidth() > from.bitWidth()) {
+            if (to.isNumeric() and to.bitWidth() > from.bitWidth()) {
                 // If `to` has greater bit width than `from`.
                 self.c.emit(
                     std.fmt.allocPrint(self.alloc, "{s} = zext {s} {s} to {s}", .{
