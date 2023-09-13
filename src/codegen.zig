@@ -295,7 +295,6 @@ pub const CodeGen = struct {
         \\declare ptr @malloc(i64)
         \\declare i32 @getc(ptr)
         \\declare i32 @"\01_fputs"(ptr, ptr)
-        \\declare i32 @fputs(ptr, ptr)
         \\declare void @free(ptr)
         \\declare void @exit(i32)
         \\
