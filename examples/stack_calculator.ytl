@@ -1,0 +1,232 @@
+
+double pi;  // 3.141592653589793238
+
+[-]double stack;
+i64 stack_size;
+i64 stack_allocated;
+
+[-]double push(double);
+[-]u8 string_from_double(double);
+
+unit dup() {
+  if (stack == null || stack_size < 1) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  push(stack[stack_size-1]);
+}
+
+unit add() {
+  if (stack == null || stack_size < 2) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  stack_size--;
+  stack[stack_size-1] += stack[stack_size];
+}
+
+unit sub() {
+  if (stack == null || stack_size < 2) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  stack_size--;
+  stack[stack_size-1] -= stack[stack_size];
+}
+
+unit mul() {
+  if (stack == null || stack_size < 2) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  stack_size--;
+  stack[stack_size-1] *= stack[stack_size];
+}
+
+unit div() {
+  if (stack == null || stack_size < 2) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  stack_size--;
+  stack[stack_size-1] /= stack[stack_size];
+}
+
+unit rem() {
+  if (stack == null || stack_size < 2) {
+    @print("too few elements on the stack"); @print(@[-]u8 [10,0]); return;
+  }
+  stack_size--;
+  stack[stack_size-1] %= stack[stack_size];
+}
+
+unit stack_print() {
+  if (stack == null || stack_size < 1) { @print("stack is empty"); @print(@[-]u8 [10,0]); return }
+  [-]u8 s = string_from_double(stack[0]);
+  @print(s);
+  @free(s);
+  for (i32 i = 1, i < stack_size, i++) {
+    @print(", ");
+    s = string_from_double(stack[i]);
+    @print(s);
+    @free(s);
+  }
+  @print(@[-]u8 [10,0]);
+}
+
+[-]double stack_init() {
+  stack_size = 0;
+  stack_allocated = 16;
+  stack = @[-]double @malloc(stack_allocated * @sizeof(double))
+}
+
+[-]double stack_resize() {
+  stack_allocated += 16;
+  stack = @[-]double @realloc(stack, stack_allocated * @sizeof(double))
+}
+
+unit push(double r) {
+  if (stack == null) { stack_init() }
+  else if (stack_size == stack_allocated) { stack_resize() };
+  stack[stack_size++] = r;
+}
+
+double pop() {
+  if (stack == null || stack_size < 1) { @print "stack is empty"; @exit(1) }
+  stack_size--;
+  return stack[stack_size];
+}
+
+i64 i64_from_string([-]u8 s) {
+  i64 ret = 0;
+  bool zaporne = false;
+  i64 i = 1;
+  if ((u8 c = s[0]) == 45) { zaporne = true; c = s[i++] }
+  do {
+    i64 const = 922337203685477580;  // == floor(2**63 / 10)
+    if (ret<=const && (ret!=const || c-48<=(zaporne ? 8 : 7)) && 48<=c<58) {
+      ret = 10*ret + (c - 48);
+    } else { @exit(1) }
+    c = s[i++];
+  } while (c != 0);
+  return zaporne ?? -ret : ret;
+}
+
+[-]u8 string_from_i64(i64 n) {
+  [-]u8 temp = "-0123456789012345678";
+  if (bool zaporne = (n < 0)) { n *= -1 }
+  i64 i = 19;
+  do { temp[i--] = @u8(48 + (n % 10)); n /= 10 } while (n > 0);
+  i64 delka = (19 - i) + (zaporne ? temp[i--] = 45; 1 : 0);
+  [-]u8 preret = @[-]u8(@malloc(8 + delka + 1));
+  @[]i64(preret)[] = delka;
+  [-]u8 ret = @[-]u8(preret[8]#);
+  for (i64 j = 0, i++; j<=delka, j++) { ret[j] = temp[i] }
+  return ret;
+}
+
+double double_from_string([-]u8 s) {
+  u8 c = s[0];
+  bool zaporne = c==45;
+  i64 dot_index = -1;
+  for (i64 i = @i64 zaporne, s[i] != 0, i++) {
+    if (s[i] == '.') {
+      if (dot_index != -1) { @exit(1) };
+      dot_index = i;
+      continue;
+    }
+    if (not 48 <= s[i] < 58) {
+      @exit 1;
+    }
+  }
+  if (dot_index == -1) {
+    return @double(i64_from_string(s));
+  }
+  s[dot_index] = 0;
+  double whole_part = i64_from_string(s);
+  s[dot_index] = '.';
+  double decimal_part = i64_from_string(@[-]u8(s[dot_index+1]#));
+  for (i64 i = 0, i < @len(s) - (dot_index+1), i++) {
+    decimal_part /= 10;
+  }
+  return whole_part + (zaporne ?? -decimal_part : decimal_part);
+}
+
+unit copy_string([-]u8 what, [-]u8 where) {
+  i64 i = 0;
+  do {
+    where[i] = what[i];
+  } while (what[i++] != 0)
+}
+
+bool equal_strings([-]u8 s1, [-]u8 s2) {
+  for (i64 i = 0, true, i++) {
+    if (s1[i] != s2[i]) { return false };
+    if (s1[i] == 0) { return true };
+  }
+  false;  // unreachable
+}
+
+[-]u8 string_from_double(double r) {
+  [-]u8 ret = @alloc([-]u8, 256);
+  bool zaporne = r<0;
+  i64 i = 0;
+  if (zaporne) { r = -r; ret[i++] = '-' }
+  [-]u8 whole_part = string_from_i64(@i64 r);
+  copy_string(whole_part, @[-]u8(ret[i]#));
+  i += @len whole_part;
+  @free(whole_part);
+  double decimal_remainder = (r - @i64 r)*10;
+  if (not 0<=decimal_remainder<10) {
+    copy_string("NaN", ret);
+    return ret;
+  }
+  if (decimal_remainder == 0) {
+    (@[-]i64 ret)[-1] = i;
+    return ret;
+  }
+  ret[i++] = '.';
+  i32 m = 11;  // number of decimal places (the rest will be rounded towards zero)
+  while (m > 0 and decimal_remainder > 0) {
+    u8 d = @u8(decimal_remainder);
+    decimal_remainder -= d;
+    decimal_remainder *= 10;
+    ret[i++] = '0' + d;
+    m--;
+  }
+  ret[i] = 0;
+  (@[-]i64 ret)[-1] = i;
+  return ret;
+}
+
+i32 main() {
+  @print "Enter a number (or 'pi') to push number to the top of the stack."; @print(@[-]u8 [10,0]);
+  @print "Enter +, -, *, / or % to pop 2 elements from stack, perform the desired operation and push result to the top of the stack."; @print(@[-]u8 [10,0]);
+  @print "Press 'Enter' to see the contents of the stack."; @print(@[-]u8 [10,0]);
+
+  pi = 3.141592653589793238;
+  [-]u8 s;
+  do {
+    s = @readln();
+    if (equal_strings(s, "exit")) {
+      return 0;
+    } else if (equal_strings(s, "pop")) {
+      pop();
+    } else if (equal_strings(s, "dup")) {
+      dup();
+    } else if (equal_strings(s, "")) {
+      stack_print();
+    } else if (equal_strings(s, "pi")) {
+      push(pi);
+    } else if (equal_strings(s, "+")) {
+      add();
+    } else if (equal_strings(s, "-")) {
+      sub();
+    } else if (equal_strings(s, "*")) {
+      mul();
+    } else if (equal_strings(s, "/")) {
+      div();
+    } else if (equal_strings(s, "%")) {
+      rem();
+    } else {
+      push(double_from_string(s));
+    }
+    @free(s);
+  } while (true);
+  0;  // unreachable
+}
