@@ -351,11 +351,25 @@ pub const Type = union(TypeTag) {
     }
 };
 
+/// Computes the absolute value of an integer. Wraps `std.math.asbInt` for convenience.
+fn abs(x: anytype) @TypeOf(x) {
+    return std.math.absInt(x) catch unreachable;
+}
+
 pub fn leastSupertype(alloc: std.mem.Allocator, fstParam: *Type, sndParam: *Type) ?*Type {
     var fst = fstParam;
     var snd = sndParam;
 
-    if (fst.equals(snd.*)) return fst.clone(alloc);
+    if (fst.equals(snd.*)) {
+        if (fst.isConstant() and
+            (abs(fst.constant.value) < abs(snd.constant.value) or
+            (abs(fst.constant.value) == abs(snd.constant.value) and snd.constant.value >= 0)))
+        {
+            return snd.clone(alloc);
+        }
+
+        return fst.clone(alloc);
+    }
     if (fst.isUnit() or snd.isUnit()) return null;
     if (fst.isBool() or snd.isBool()) return null;
     if (fst.isPointer()) {

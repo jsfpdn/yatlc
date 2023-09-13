@@ -3049,7 +3049,7 @@ pub const Parser = struct {
         const ptrT = try self.parseType();
         defer ptrT.destroy(self.alloc);
 
-        if (ptrT.isPointer()) {
+        if (ptrT.isArray() and ptrT.array.dimensions == 0) {
             try self.consume(tt.RPAREN);
 
             var result = self.c.emitAllocPtr(ptrT.array.ofType.*);
@@ -3060,112 +3060,112 @@ pub const Parser = struct {
             };
         }
 
-        if (ptrT.isArray()) {
-            var width = ptrT.array.dimensions;
+        if (!ptrT.isArray()) {
+            self.report(lparen, reporter.Level.ERROR, "1st argument of '@alloc' is {s} instead of array", .{ptrT.str()});
+            return SyntaxError.TypeError;
+        }
 
-            var tSize = self.createString("{d}", .{width});
-            var newTSize: []const u8 = self.alloc.dupe(u8, tSize) catch unreachable;
+        var width = ptrT.array.ofType.byteWidth();
 
-            defer {
-                self.alloc.free(tSize);
-                self.alloc.free(newTSize);
-            }
+        var tSize = self.createString("{d}", .{width});
+        var newTSize: []const u8 = self.alloc.dupe(u8, tSize) catch unreachable;
 
-            var dimensions = std.ArrayList([]const u8).initCapacity(self.alloc, ptrT.array.dimensions) catch unreachable;
-            defer {
-                for (dimensions.items) |d| self.alloc.free(d);
-                dimensions.deinit();
-            }
+        defer {
+            self.alloc.free(tSize);
+            self.alloc.free(newTSize);
+        }
 
-            var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
-            defer helperI64T.destroy(self.alloc);
+        var dimensions = std.ArrayList([]const u8).initCapacity(self.alloc, ptrT.array.dimensions) catch unreachable;
+        defer {
+            for (dimensions.items) |d| self.alloc.free(d);
+            dimensions.deinit();
+        }
 
-            for (0..ptrT.array.dimensions) |i| {
-                _ = i;
-                var next = try self.consumeGet(tt.COMMA);
-                var exp = try self.parseExpression();
-                defer exp.destroy(self.alloc);
+        var helperI64T = types.SimpleType.create(self.alloc, types.SimpleType.I64);
+        defer helperI64T.destroy(self.alloc);
 
-                var dimension = try self.convertRep(
-                    next,
-                    exp.t.?,
-                    helperI64T,
-                    ConvMode.IMPLICIT,
-                    exp.rValue.?,
-                    self.c.lastBlockIndex(),
-                );
+        for (0..ptrT.array.dimensions) |i| {
+            _ = i;
+            var next = try self.consumeGet(tt.COMMA);
+            var exp = try self.parseExpression();
+            defer exp.destroy(self.alloc);
 
-                dimensions.append(dimension) catch unreachable;
-
-                self.alloc.free(newTSize);
-                newTSize = self.c.genLLVMNameEmpty();
-                self.c.emit(
-                    self.createString("{s} = mul i64 {s}, {s}", .{ newTSize, tSize, dimension }),
-                    self.c.lastBlockIndex(),
-                );
-
-                self.alloc.free(tSize);
-                tSize = self.alloc.dupe(u8, newTSize) catch unreachable;
-            }
-
-            try self.consume(tt.RPAREN);
-
-            if (ptrT.array.dimensions > 0) {
-                self.alloc.free(newTSize);
-                newTSize = self.c.genLLVMNameEmpty();
-
-                self.c.emit(
-                    self.createString("{s} = add i64 {s}, {d}", .{ newTSize, tSize, ptrT.array.dimensions * 8 + 7 }),
-                    self.c.lastBlockIndex(),
-                );
-
-                self.alloc.free(tSize);
-                tSize = self.c.genLLVMNameEmpty();
-
-                self.c.emit(
-                    self.createString("{s} = and i64 {s}, -8", .{ tSize, newTSize }),
-                    self.c.lastBlockIndex(),
-                );
-            }
-
-            var place = self.c.genLLVMNameEmpty();
-            defer self.alloc.free(place);
-
-            self.c.emit(
-                self.createString("{s} = call ptr @malloc(i64 {s})", .{ place, tSize }),
+            var dimension = try self.convertRep(
+                next,
+                exp.t.?,
+                helperI64T,
+                ConvMode.IMPLICIT,
+                exp.rValue.?,
                 self.c.lastBlockIndex(),
             );
 
-            var newPointer = self.c.genLLVMNameEmpty();
-            defer self.alloc.free(newPointer);
+            dimensions.append(dimension) catch unreachable;
 
-            for (dimensions.items) |d| {
-                self.c.emit(
-                    self.createString("store i64 {s}, ptr {s}", .{ d, place }),
-                    self.c.lastBlockIndex(),
-                );
+            self.alloc.free(newTSize);
+            newTSize = self.c.genLLVMNameEmpty();
+            self.c.emit(
+                self.createString("{s} = mul i64 {s}, {s}", .{ newTSize, tSize, dimension }),
+                self.c.lastBlockIndex(),
+            );
 
-                self.alloc.free(newPointer);
-                newPointer = self.c.genLLVMNameEmpty();
-
-                self.c.emit(
-                    self.createString("{s} = getelementptr i64, ptr {s}, i64 1", .{ newPointer, place }),
-                    self.c.lastBlockIndex(),
-                );
-
-                self.alloc.free(place);
-                place = self.alloc.dupe(u8, newPointer) catch unreachable;
-            }
-
-            return Expression{
-                .t = ptrT.clone(self.alloc),
-                .rValue = self.alloc.dupe(u8, place) catch unreachable,
-                .semiMustFollow = true,
-            };
+            self.alloc.free(tSize);
+            tSize = self.alloc.dupe(u8, newTSize) catch unreachable;
         }
 
-        self.report(lparen, reporter.Level.ERROR, "1st argument of '@alloc' is {s} instead of array or pointer", .{ptrT.str()});
-        return SyntaxError.TypeError;
+        try self.consume(tt.RPAREN);
+
+        if (ptrT.array.dimensions > 0) {
+            self.alloc.free(newTSize);
+            newTSize = self.c.genLLVMNameEmpty();
+
+            self.c.emit(
+                self.createString("{s} = add i64 {s}, {d}", .{ newTSize, tSize, ptrT.array.dimensions * 8 + 7 }),
+                self.c.lastBlockIndex(),
+            );
+
+            self.alloc.free(tSize);
+            tSize = self.c.genLLVMNameEmpty();
+
+            self.c.emit(
+                self.createString("{s} = and i64 {s}, -8", .{ tSize, newTSize }),
+                self.c.lastBlockIndex(),
+            );
+        }
+
+        var place = self.c.genLLVMNameEmpty();
+        defer self.alloc.free(place);
+
+        self.c.emit(
+            self.createString("{s} = call ptr @malloc(i64 {s})", .{ place, tSize }),
+            self.c.lastBlockIndex(),
+        );
+
+        var newPointer = self.c.genLLVMNameEmpty();
+        defer self.alloc.free(newPointer);
+
+        for (dimensions.items) |d| {
+            self.c.emit(
+                self.createString("store i64 {s}, ptr {s}", .{ d, place }),
+                self.c.lastBlockIndex(),
+            );
+
+            self.alloc.free(newPointer);
+            newPointer = self.c.genLLVMNameEmpty();
+
+            self.c.emit(
+                self.createString("{s} = getelementptr i64, ptr {s}, i64 1", .{ newPointer, place }),
+                self.c.lastBlockIndex(),
+            );
+
+            self.alloc.free(place);
+            place = self.alloc.dupe(u8, newPointer) catch unreachable;
+        }
+
+        return Expression{
+            .t = ptrT.clone(self.alloc),
+            .rValue = self.alloc.dupe(u8, place) catch unreachable,
+            .semiMustFollow = true,
+        };
     }
 
     fn parseBuiltinMalloc(self: *Parser) SyntaxError!Expression {
