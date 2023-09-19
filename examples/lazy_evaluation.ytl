@@ -1,0 +1,28 @@
+
+unit println([-]u8 string) {
+    @print(string);
+    @print(@[-]u8 [10,0]);
+}
+
+bool returns_true() {
+    println("returns true");
+    return true;
+}
+
+bool returns_false() {
+    println("returns false");
+    return false;
+}
+
+i32 main() {
+    println("true && false && true:");
+    // Writes `returns true\nreturns false` to the stdout, omitting the last `returns true`.
+    bool a = returns_true() && returns_false() && returns_true();
+
+    println("");
+    println("false || true || true:");
+    // Writes `returns false\nreturns true` to the stdout, omitting the last `returns true`.
+    bool b = returns_false() || returns_true() || returns_true();
+
+    return 0;
+}

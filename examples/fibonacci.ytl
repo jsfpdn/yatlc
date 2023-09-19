@@ -1,13 +1,47 @@
+
+unit println([-]u8 string) {
+    @print(string);
+    @print(@[-]u8 [10,0]);
+}
+
+i64 i64_from_string([-]u8 s) {
+  i64 ret = 0;
+  bool zaporne = false;
+  i64 i = 1;
+  if ((u8 c = s[0]) == 45) { zaporne = true; c = s[i++] }
+  do {
+    i64 const = 922337203685477580;  // == floor(2**63 / 10)
+    if (ret<=const && (ret!=const || c-48<=(zaporne ? 8 : 7)) && 48<=c<58) {
+      ret = 10*ret + (c - 48);
+    } else { @exit(1) }
+    c = s[i++];
+  } while (c != 0);
+  return zaporne ?? -ret : ret;
+}
+
+[-]u8 string_from_i64(i64 n) {
+  [-]u8 temp = "-0123456789012345678";
+  if (bool zaporne = (n < 0)) { n *= -1 }
+  i64 i = 19;
+  do { temp[i--] = @u8(48 + (n % 10)); n /= 10 } while (n > 0);
+  i64 delka = (19 - i) + (zaporne ? temp[i--] = 45; 1 : 0);
+  [-]u8 preret = @[-]u8(@malloc(8 + delka + 1));
+  @[]i64(preret)[] = delka;
+  [-]u8 ret = @[-]u8(preret[8]#);
+  for (i64 j = 0, i++; j<=delka, j++) { ret[j] = temp[i] }
+  return ret;
+}
+
 // Computes the n-th Fibonacci number.
-i32 fibonacci(i32 n) {
+i64 fibonacci(i64 n) {
     if (n <= 0) { return 0; }
     if (n == 1) { return 1; }
 
-    i32 f1 = 0;
-    i32 f2 = 1;
+    i64 f1 = 0;
+    i64 f2 = 1;
 
-    for (i32 i = 1, i < n, i++) {
-        i32 f3 = f1 + f2;
+    for (i64 i = 1, i < n, i++) {
+        i64 f3 = f1 + f2;
         f1 = f2;
         f2 = f3;
     }
@@ -15,10 +49,22 @@ i32 fibonacci(i32 n) {
     return f2;
 }
 
-i32 main() {
-    i32 result = fibonacci(10);
+i32 main(i32 argc, [-][-]u8 argv) {
+    if (argc != 2) {
+        println("expected exactly 1 argument.");
+        @print("usage: ");
+        @print(argv[0]);
+        println(" <number>");
+        @exit(1);
+    }
 
-    @print(result);
+    i64 number = i64_from_string(argv[1]);
+    i64 result = fibonacci(number);
+    [-]u8 result_str = string_from_i64(result);
+
+    @print(argv[1]);
+    @print("th Fibonacci number is ");
+    println(result_str);
 
     return 0;
 }

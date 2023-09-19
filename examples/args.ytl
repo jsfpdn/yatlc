@@ -1,0 +1,28 @@
+
+unit println([-]u8 string) {
+    @print(string);
+    @print(@[-]u8 [10,0]);
+}
+
+i32 main(i32 argc, [-][-]u8 argv) {
+    @print("binary name: ");
+    println(argv[0]);
+
+    @print("positional args: ");
+
+    if (argc < 2) {
+        println("<none>");
+    } else {
+        bool comma = false;
+        for (i32 i = 1, i < argc, i++) {
+            if (comma) { @print(", "); }
+            @print(argv[i]);
+
+            comma = true;
+        }
+
+        println("");
+    }
+
+    return 0;
+}
